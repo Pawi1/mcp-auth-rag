@@ -74,10 +74,16 @@ async def _ensure_schema() -> None:
                 UNIQUE (owner, content_hash)
             )
         """)
-        # to_tsvector('polish', text) in a GENERATED column is the documented
+        # to_tsvector('simple', text) in a GENERATED column is the documented
         # supported pattern (PG treats a literal regconfig argument as
-        # immutable enough) — 'polish' is a built-in snowball config, no
-        # extension needed.
+        # immutable enough). 'simple' (tokenize + lowercase, no stemming) —
+        # not 'polish', which doesn't exist: Postgres's built-in configs are
+        # Snowball-based, and Snowball has no Polish stemmer. Getting real
+        # Polish stemming means installing an ispell dictionary into the
+        # Postgres image and registering a TEXT SEARCH CONFIGURATION for it
+        # — a real upgrade, just not one this schema forces on day one.
+        # RRF fusion (rag_retrieval.py) means Qdrant's semantic search still
+        # covers for the stemming this gives up.
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS chunks (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -87,7 +93,7 @@ async def _ensure_schema() -> None:
                 section TEXT,
                 text TEXT NOT NULL,
                 word_count INT NOT NULL,
-                tsv tsvector GENERATED ALWAYS AS (to_tsvector('polish', text)) STORED,
+                tsv tsvector GENERATED ALWAYS AS (to_tsvector('simple', text)) STORED,
                 UNIQUE (document_id, ordinal)
             )
         """)
@@ -237,15 +243,16 @@ async def fetch_chunks_by_id(chunk_ids: list[str]) -> dict[str, dict]:
 
 
 async def fts_search(query: str, owner: str, limit: int) -> list[str]:
-    """Full-text search over chunk content, Polish-aware. Returns chunk id
-    strings ranked best-first (rank position is all retrieval.py needs — see
-    reciprocal_rank_fusion)."""
+    """Full-text search over chunk content (keyword match, no stemming — see
+    the 'simple' vs. 'polish' note on the chunks table above). Returns chunk
+    id strings ranked best-first (rank position is all retrieval.py needs —
+    see reciprocal_rank_fusion)."""
     async with pg_pool().acquire() as conn:
         rows = await conn.fetch(
             """SELECT c.id
                FROM chunks c JOIN documents d ON d.id = c.document_id
-               WHERE d.owner = $1 AND c.tsv @@ websearch_to_tsquery('polish', $2)
-               ORDER BY ts_rank(c.tsv, websearch_to_tsquery('polish', $2)) DESC
+               WHERE d.owner = $1 AND c.tsv @@ websearch_to_tsquery('simple', $2)
+               ORDER BY ts_rank(c.tsv, websearch_to_tsquery('simple', $2)) DESC
                LIMIT $3""",
             owner, query, limit,
         )
