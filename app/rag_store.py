@@ -136,17 +136,39 @@ def upload_path(document_id, filename: str) -> Path:
 # ---------------------------------------------------------------------------
 
 async def create_document(owner: str, filename: str, fmt: str, content_hash: str) -> Optional[dict]:
-    """Returns the new row, or None if this owner already uploaded this exact
-    content before (content_hash dedup — no point re-ingesting the same PDF)."""
+    """Returns the new/reset row, or None if this owner already has this
+    exact content ingested or in progress (content_hash dedup — no point
+    re-ingesting the same PDF). A prior *failed* attempt (status='error')
+    is reset to pending and retried instead of silently skipped — "fix the
+    bug, re-upload the same file" is the normal recovery path, and without
+    this it'd be deduped away forever. Any chunks left over from that failed
+    attempt are purged first, so the retry can't collide on (document_id,
+    ordinal) — a no-op for a genuinely new document, which has none."""
     async with pg_pool().acquire() as conn:
-        row = await conn.fetchrow(
-            """INSERT INTO documents (owner, filename, format, content_hash)
-               VALUES ($1, $2, $3, $4)
-               ON CONFLICT (owner, content_hash) DO NOTHING
-               RETURNING *""",
-            owner, filename, fmt, content_hash,
-        )
-        return dict(row) if row else None
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                """INSERT INTO documents (owner, filename, format, content_hash)
+                   VALUES ($1, $2, $3, $4)
+                   ON CONFLICT (owner, content_hash) DO UPDATE SET
+                       filename = EXCLUDED.filename,
+                       status = 'pending', error = NULL, chunk_count = 0,
+                       uploaded_at = now(), processed_at = NULL
+                   WHERE documents.status = 'error'
+                   RETURNING *""",
+                owner, filename, fmt, content_hash,
+            )
+            if row is None:
+                return None
+            stale_chunk_ids = [
+                r["id"] for r in await conn.fetch("SELECT id FROM chunks WHERE document_id=$1", row["id"])
+            ]
+            if stale_chunk_ids:
+                await conn.execute("DELETE FROM chunks WHERE document_id=$1", row["id"])
+
+    if stale_chunk_ids:
+        await qdrant().delete(collection_name=RAG_QDRANT_COLLECTION, points_selector=[str(c) for c in stale_chunk_ids])
+
+    return dict(row)
 
 
 async def get_document(document_id, owner: Optional[str] = None) -> Optional[dict]:
@@ -207,15 +229,19 @@ async def insert_chunks(document_id, owner: str, chunks: list[dict], embeddings:
     ids = [uuid.uuid4() for _ in chunks]
 
     async with pg_pool().acquire() as conn:
-        await conn.executemany(
-            """INSERT INTO chunks (id, document_id, ordinal, page, section, text, word_count)
-               VALUES ($1, $2, $3, $4, $5, $6, $7)""",
-            [
-                (ids[i], document_id, c["ordinal"], c["page"], c["section"], c["text"], c["word_count"])
-                for i, c in enumerate(chunks)
-            ],
-        )
-        await conn.execute("UPDATE documents SET chunk_count = chunk_count + $2 WHERE id=$1", document_id, len(chunks))
+        # explicit transaction: without it, executemany() commits each row
+        # as it goes (no implicit all-or-nothing), so one bad row partway
+        # through a batch would leave the rest permanently half-inserted.
+        async with conn.transaction():
+            await conn.executemany(
+                """INSERT INTO chunks (id, document_id, ordinal, page, section, text, word_count)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7)""",
+                [
+                    (ids[i], document_id, c["ordinal"], c["page"], c["section"], c["text"], c["word_count"])
+                    for i, c in enumerate(chunks)
+                ],
+            )
+            await conn.execute("UPDATE documents SET chunk_count = chunk_count + $2 WHERE id=$1", document_id, len(chunks))
 
     points = [
         PointStruct(
