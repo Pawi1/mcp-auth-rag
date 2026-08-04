@@ -18,4 +18,23 @@ _cfg.MCP_HOST = "0.0.0.0"
 _cfg.MCP_PORT = 8000
 _cfg.MCP_SERVER_NAME = "mcp-auth-starter-test"
 _cfg.DB_TIMEOUT = 5
+
+# RAG
+_cfg.RAG_POSTGRES_DSN = "postgresql://rag:rag@localhost:5433/rag_test"
+_cfg.RAG_QDRANT_URL = "http://localhost:6333"
+_cfg.RAG_QDRANT_COLLECTION = "rag_chunks_test"
+_cfg.RAG_OLLAMA_BASE_URL = "http://localhost:11434/v1"
+_cfg.RAG_OLLAMA_API_KEY = ""
+_cfg.RAG_EMBEDDING_MODEL = "bge-m3"
+_cfg.RAG_EMBEDDING_DIM = 1024
+_cfg.RAG_RERANKER_BASE_URL = "http://localhost:11434"
+_cfg.RAG_RERANKER_MODEL = "bge-reranker-v2-m3"
+_cfg.RAG_RERANKER_ENABLED = True
+_cfg.RAG_CHUNK_TARGET_WORDS = 350
+_cfg.RAG_CHUNK_OVERLAP_WORDS = 40
+_cfg.RAG_CANDIDATE_K = 25
+_cfg.RAG_TOP_K = 8
+_cfg.RAG_UPLOAD_DIR = Path("/tmp/_test_mcp_auth_rag_uploads")
+_cfg.RAG_MAX_UPLOAD_MB = 200
+
 sys.modules.setdefault("config", _cfg)
