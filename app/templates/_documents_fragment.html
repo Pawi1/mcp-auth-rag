@@ -1,0 +1,29 @@
+<table id="doc-list" class="doc-table"
+       {% if documents and documents|selectattr("status", "in", ["pending", "processing"])|list %}
+       hx-get="/rag/documents/fragment" hx-trigger="every 2s" hx-swap="outerHTML"
+       {% endif %}>
+  <thead>
+    <tr><th>File</th><th>Status</th><th>Pages</th><th>Chunks</th><th>Uploaded</th><th></th></tr>
+  </thead>
+  <tbody>
+    {% for doc in documents %}
+    <tr>
+      <td>{{ doc.filename }}</td>
+      <td><span class="status status-{{ doc.status }}">{{ doc.status }}</span>
+        {% if doc.status == "error" and doc.error %}<div class="err-inline">{{ doc.error }}</div>{% endif %}
+      </td>
+      <td>{{ doc.page_count or "—" }}</td>
+      <td>{{ doc.chunk_count }}</td>
+      <td>{{ doc.uploaded_at.strftime("%Y-%m-%d %H:%M") }}</td>
+      <td>
+        <button class="btn-sm btn-danger"
+                hx-delete="/rag/documents/{{ doc.id }}"
+                hx-target="#doc-list" hx-swap="outerHTML"
+                hx-confirm="Delete {{ doc.filename }}?">Delete</button>
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="6" class="empty">No documents yet — upload one above.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>

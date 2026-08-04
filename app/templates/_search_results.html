@@ -1,0 +1,18 @@
+{% if query %}
+  {% if results %}
+  <ol class="results">
+    {% for r in results %}
+    <li>
+      <div class="result-meta">
+        <strong>{{ r.filename }}</strong>
+        {% if r.section %}<span class="sep">·</span> {{ r.section }}{% endif %}
+        {% if r.page %}<span class="sep">·</span> str. {{ r.page }}{% endif %}
+      </div>
+      <div class="result-text">{{ r.text }}</div>
+    </li>
+    {% endfor %}
+  </ol>
+  {% else %}
+  <p class="empty">No results for "{{ query }}".</p>
+  {% endif %}
+{% endif %}

@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>RAG panel</title>
+<script src="/static/htmx.min.js"></script>
+<style>
+  *{box-sizing:border-box}
+  body{font-family:sans-serif;background:#f5f7fa;margin:0;padding:32px 20px;color:#1e293b}
+  .wrap{max-width:900px;margin:0 auto}
+  h1{color:#1e3a5f;font-size:22px}
+  .topbar{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:24px}
+  .topbar a{color:#666;font-size:13px;text-decoration:none}
+  .card{background:#fff;border-radius:10px;padding:24px;box-shadow:0 2px 16px #0001;margin-bottom:24px}
+  h2{margin-top:0;font-size:16px;color:#1e3a5f}
+  input[type=file]{display:block;margin:12px 0}
+  input[type=text]{width:100%;padding:10px 12px;border:1px solid #ddd;border-radius:6px;font-size:15px}
+  .btn{background:#2563eb;color:#fff;border:none;padding:10px 18px;border-radius:6px;font-size:14px;cursor:pointer}
+  .btn:hover{background:#1d4ed8}
+  .btn-sm{padding:5px 10px;border-radius:5px;font-size:12px;border:none;cursor:pointer}
+  .btn-danger{background:#fef2f2;color:#b91c1c}
+  .btn-danger:hover{background:#fee2e2}
+  .doc-table{width:100%;border-collapse:collapse;font-size:14px}
+  .doc-table th{text-align:left;color:#64748b;font-size:12px;text-transform:uppercase;padding:8px;border-bottom:1px solid #eee}
+  .doc-table td{padding:8px;border-bottom:1px solid #f1f5f9}
+  .status{display:inline-block;padding:2px 8px;border-radius:99px;font-size:12px}
+  .status-pending,.status-processing{background:#fef9c3;color:#854d0e}
+  .status-done{background:#dcfce7;color:#166534}
+  .status-error{background:#fef2f2;color:#b91c1c}
+  .err-inline{color:#b91c1c;font-size:12px;margin-top:2px}
+  .empty{color:#94a3b8;text-align:center;padding:20px}
+  .results{list-style:none;padding:0;margin:0}
+  .results li{padding:12px 0;border-bottom:1px solid #f1f5f9}
+  .result-meta{font-size:12px;color:#64748b;margin-bottom:4px}
+  .sep{margin:0 4px}
+  .result-text{font-size:14px;line-height:1.5}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="topbar">
+    <h1>RAG panel</h1>
+    <span>{{ username }} · <a href="/rag/logout">sign out</a></span>
+  </div>
+
+  <div class="card">
+    <h2>Upload documents</h2>
+    <form hx-post="/rag/documents" hx-target="#doc-list" hx-swap="outerHTML" hx-encoding="multipart/form-data">
+      <input type="file" name="files" multiple accept=".pdf,.docx,.txt,.md" required>
+      <button class="btn" type="submit">Upload</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>Documents</h2>
+    {% include "_documents_fragment.html" %}
+  </div>
+
+  <div class="card">
+    <h2>Search</h2>
+    <form hx-post="/rag/search" hx-target="#search-results" hx-swap="innerHTML">
+      <input type="text" name="query" placeholder="Ask about your documents…" required autofocus>
+    </form>
+    <div id="search-results"></div>
+  </div>
+</div>
+</body>
+</html>
