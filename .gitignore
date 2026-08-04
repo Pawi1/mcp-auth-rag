@@ -17,6 +17,10 @@ api.secret
 # Local dev scratch (not shipped, not part of the app)
 .dev/
 
+# Runtime data (SQLite DB, uploaded files, logs) for a local config.json
+# pointing paths.data_root at ./data
+/data/
+
 # Binary build artifacts
 app/dist/
 app/build/

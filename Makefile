@@ -1,4 +1,4 @@
-.PHONY: help dev test build-binary install uninstall start stop restart status logs clean rag-up rag-down rag-logs
+.PHONY: help dev run adduser test build-binary install uninstall start stop restart status logs clean rag-up rag-down rag-logs
 
 APP_DIR     := app
 SERVICE_DIR := services
@@ -8,7 +8,9 @@ SERVICE     := mcp-auth-starter
 help:
 	@echo "MCP Auth Starter"
 	@echo ""
+	@echo "  make run             rag-up + dev in one shot — what you want for local dev"
 	@echo "  make dev             Run the server directly with the venv's python (no build)"
+	@echo "  make adduser         Create/reset a login account (needed before you can use /rag)"
 	@echo "  make test            Run the test suite"
 	@echo "  make build-binary    Build a single-file binary with PyInstaller"
 	@echo "  make install         Install the binary + systemd service (requires root)"
@@ -22,7 +24,18 @@ $(APP_DIR)/.venv/bin/python3:
 	$(APP_DIR)/.venv/bin/pip install --quiet -r $(APP_DIR)/requirements.txt
 
 dev: $(APP_DIR)/.venv/bin/python3
-	cd $(APP_DIR) && .venv/bin/python3 main.py
+	cd $(APP_DIR) && \
+	SECRET_KEY=$${SECRET_KEY:-$$(cat ../secret_key.secret 2>/dev/null)} \
+	RAG_OLLAMA_API_KEY=$${RAG_OLLAMA_API_KEY:-$$(cat ../api.secret 2>/dev/null)} \
+	.venv/bin/python3 main.py
+
+# rag-up + dev, in that order — dev needs Postgres/Qdrant reachable to start
+# at all (see rag_store.init_stores() in main.py's lifespan), so this is the
+# one command you actually want for local development.
+run: rag-up dev
+
+adduser: $(APP_DIR)/.venv/bin/python3
+	cd $(APP_DIR) && .venv/bin/python3 main.py --adduser
 
 test: $(APP_DIR)/.venv/bin/python3
 	cd $(APP_DIR) && .venv/bin/python3 -m pytest ../tests -v
