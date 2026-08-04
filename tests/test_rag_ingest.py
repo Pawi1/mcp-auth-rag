@@ -144,6 +144,29 @@ class TestParseDispatch:
             ri.parse(b"data", "exe")
 
 
+class TestCleanText:
+    def test_strips_nul_bytes(self):
+        assert ri._clean_text("hello\x00world") == "helloworld"
+
+    def test_strips_other_c0_control_chars(self):
+        assert ri._clean_text("a\x01b\x1fc\x7fd") == "abcd"
+
+    def test_preserves_whitespace(self):
+        assert ri._clean_text("a\tb\nc\rd") == "a\tb\nc\rd"
+
+    def test_pdf_parsing_never_yields_nul_bytes(self):
+        # Postgres's text columns reject embedded NUL bytes outright — this
+        # is a regression guard for that failure mode, not just a unit test
+        # of _clean_text in isolation. (DOCX doesn't need the same guard:
+        # XML itself disallows embedded NULs, so python-docx/lxml refuse to
+        # even construct one — parse_docx still calls _clean_text out of
+        # caution, but there's no legitimate DOCX to reproduce this with.)
+        pdf = _make_pdf([("Nag\x00owek", 20, "sl\x00owo")])
+        paragraphs, _ = ri.parse_pdf(pdf)
+        assert all("\x00" not in p.text for p in paragraphs)
+        assert all("\x00" not in (p.heading or "") for p in paragraphs)
+
+
 class TestIngestDocument:
     async def test_happy_path_embeds_stores_and_marks_done(self, monkeypatch):
         import rag_embed

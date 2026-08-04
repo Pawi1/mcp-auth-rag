@@ -34,6 +34,18 @@ SUPPORTED_FORMATS = {"pdf", "docx", "txt", "md"}
 _HEADING_SIZE_RATIO = 1.2   # a line's max font size vs. document body size
 _HEADING_MAX_WORDS = 15     # headings are short; longer lines are body text
 
+# Postgres's text/varchar columns reject embedded NUL bytes outright (not a
+# UTF-8 validity issue — it's a hard Postgres limitation), and PDF text
+# extraction occasionally yields C0 control chars (incl. \x00) from
+# malformed fonts/encodings. Strip them here so nothing downstream — DB
+# insert, embedding input — ever sees one. \t/\n/\r are real whitespace,
+# not stripped.
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def _clean_text(text: str) -> str:
+    return _CONTROL_CHARS_RE.sub("", text)
+
 
 @dataclass
 class Paragraph:
@@ -79,7 +91,7 @@ def parse_pdf(data: bytes) -> tuple[list[Paragraph], int]:
                     spans = [s for s in line.get("spans", []) if s["text"].strip()]
                     if not spans:
                         continue
-                    line_text = "".join(s["text"] for s in spans).strip()
+                    line_text = _clean_text("".join(s["text"] for s in spans).strip())
                     max_size = max(s["size"] for s in spans)
                     if _looks_like_heading(line_text, max_size, body_size):
                         current_heading = line_text
@@ -129,7 +141,7 @@ def parse_docx(data: bytes) -> tuple[list[Paragraph], int]:
     paragraphs: list[Paragraph] = []
     current_heading: Optional[str] = None
     for para in doc.paragraphs:
-        text = para.text.strip()
+        text = _clean_text(para.text.strip())
         if not text:
             continue
         if para.style is not None and para.style.name.startswith(("Heading", "Title")):
@@ -142,7 +154,7 @@ def parse_docx(data: bytes) -> tuple[list[Paragraph], int]:
 def parse_text(data: bytes) -> tuple[list[Paragraph], int]:
     """Shared by .txt and .md — a Markdown '#' heading is detected, anything
     else is treated as flat prose split on blank lines."""
-    text = data.decode("utf-8", errors="replace")
+    text = _clean_text(data.decode("utf-8", errors="replace"))
     current_heading: Optional[str] = None
     paragraphs: list[Paragraph] = []
     for block in re.split(r"\n\s*\n", text):
