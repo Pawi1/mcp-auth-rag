@@ -1,27 +1,22 @@
-# MCP Auth Starter
+# MCP Auth RAG
 
-> **mcp 2.0.** `main` now targets the mcp 2.0 `Server` API (constructor-based
-> `on_list_tools`/`on_call_tool` handlers instead of the old
-> `@server.list_tools()`/`@server.call_tool()` decorators). If you need the
-> mcp 1.x-pinned version, check out the
-> [`legacy`](https://github.com/Pawi1/mcp-auth-starter/tree/legacy) branch.
-> Migrating your own fork? See [MIGRATING.md](MIGRATING.md).
-
-[![Tests](https://github.com/Pawi1/mcp-auth-starter/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/Pawi1/mcp-auth-starter/actions/workflows/tests.yml)
+[![Tests](https://github.com/Pawi1/mcp-auth-rag/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/Pawi1/mcp-auth-rag/actions/workflows/tests.yml)
 [![Python 3.13+](https://img.shields.io/badge/python-3.13%2B-blue)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-A minimal, working example of the part of building an MCP server that's
-annoying to get right: **OAuth 2.0 with Client ID Metadata Documents (and
-Dynamic Client Registration, RFC 7591, as a fallback) + JWT bearer tokens,
-served over Streamable HTTP** — so Claude.ai (or any other OAuth-aware MCP
-client) can add your server as a connector with a normal browser login. No
-manual token pasting, no bypassing OAuth with a "just give me a token"
-shortcut that quietly stops working the moment you add real revocation.
+An MCP server with **OAuth 2.0 with Client ID Metadata Documents (and Dynamic
+Client Registration, RFC 7591, as a fallback) + JWT bearer tokens, served
+over Streamable HTTP** — so Claude.ai (or any other OAuth-aware MCP client)
+can add it as a connector with a normal browser login — plus a **RAG
+pipeline**: upload PDF/DOCX/TXT/MD documents through the `/rag` web panel,
+and search them both from that panel and from `rag_search`/`rag_list_documents`
+MCP tools. See [RAG — document upload, search, and MCP tools](#rag--document-upload-search-and-mcp-tools)
+below for how that's built.
 
-This is *not* a framework — it's ~1200 lines of plain Starlette you're meant
-to read, fork, and build on. There's exactly one demo tool (`whoami`) to
-prove the auth chain works end to end. Your actual tools go in `app/server.py`.
+The auth/transport layer (`app/main.py`, `app/oauth.py`, `app/auth.py`,
+`app/users.py`) is plain Starlette, meant to be read rather than treated as a
+black box. Your own tools go in `app/server.py`, alongside `whoami` and the
+`rag_*` tools.
 
 ## What's in here
 
@@ -292,14 +287,6 @@ processes, etc.).
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md).
-
-## Origin
-
-This started as the auth/transport layer of a larger, private production
-MCP server I maintain — extracted, genericized, and stripped of every bit
-of that server's domain-specific logic. What's here is just the part that's
-generically useful to anyone standing up their own MCP server: a working
-OAuth 2.0 + JWT implementation you don't have to build from scratch.
 
 ## License
 
