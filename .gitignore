@@ -11,8 +11,15 @@ __pycache__/
 .env.local
 config.json
 *.log
+*.secret
+api.secret
+
+# Local dev scratch (not shipped, not part of the app)
+.dev/
 
 # Binary build artifacts
 app/dist/
 app/build/
 app/*.spec
+
+.claude

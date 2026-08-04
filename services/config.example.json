@@ -12,5 +12,33 @@
   "auth": {
     "token_expire_days": 90,
     "access_token_expire_minutes": 60
+  },
+  "rag": {
+    "postgres": {
+      "dsn": "postgresql://rag:rag@localhost:5433/rag"
+    },
+    "qdrant": {
+      "url": "http://localhost:6333",
+      "collection": "rag_chunks"
+    },
+    "embedding": {
+      "base_url": "https://your-ollama-host/v1",
+      "model": "bge-m3",
+      "dimensions": 1024
+    },
+    "reranker": {
+      "base_url": "https://your-ollama-host",
+      "model": "bge-reranker-v2-m3",
+      "enabled": true
+    },
+    "chunking": {
+      "target_words": 350,
+      "overlap_words": 40
+    },
+    "retrieval": {
+      "candidate_k": 25,
+      "top_k": 8
+    },
+    "max_upload_mb": 200
   }
 }

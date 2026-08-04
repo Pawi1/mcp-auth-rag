@@ -8,6 +8,14 @@ python-jose[cryptography]>=3.5.0
 argon2-cffi>=23.1.0
 httpx>=0.28.0  # also used at runtime to fetch Client ID Metadata Documents (CIMD)
 
+# RAG
+asyncpg>=0.30.0          # Postgres — chunk text, full-text search, ingest job queue
+qdrant-client>=1.12.0    # vector index for semantic search
+pymupdf>=1.25.0          # PDF parsing (text + font-size metadata for heading detection)
+python-docx>=1.1.0       # DOCX parsing
+jinja2>=3.1.0            # panel templates
+python-multipart>=0.0.18 # required by Starlette to parse multipart file uploads
+
 # Testing
 pytest>=8.0.0
 pytest-asyncio>=0.24.0

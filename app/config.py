@@ -62,6 +62,45 @@ ACCESS_TOKEN_EXPIRE_MINUTES = int(_p("auth.access_token_expire_minutes", 60))
 # resource server even if it shared the same signing key.
 MCP_RESOURCE_URI = f"{SERVER_URL.rstrip('/')}/mcp"
 
+# RAG — document storage lives outside app.db (own Postgres + Qdrant, see
+# docker-compose.rag.yml) since the corpus/vector-search workload has very
+# different scale and access patterns than the auth tables above.
+RAG_POSTGRES_DSN = os.getenv("RAG_POSTGRES_DSN", _p("rag.postgres.dsn", "postgresql://rag:rag@localhost:5433/rag"))
+RAG_QDRANT_URL        = os.getenv("RAG_QDRANT_URL", _p("rag.qdrant.url", "http://localhost:6333"))
+RAG_QDRANT_COLLECTION = _p("rag.qdrant.collection", "rag_chunks")
+
+# Embedding/reranking provider — an OpenAI-compatible endpoint in front of
+# Ollama. RAG_OLLAMA_API_KEY is optional (omit the header entirely if unset,
+# rather than send an empty bearer token).
+RAG_OLLAMA_BASE_URL = os.getenv("RAG_OLLAMA_BASE_URL", _p("rag.embedding.base_url", "http://localhost:11434/v1"))
+RAG_OLLAMA_API_KEY  = os.getenv("RAG_OLLAMA_API_KEY", "")
+RAG_EMBEDDING_MODEL = _p("rag.embedding.model", "bge-m3")
+RAG_EMBEDDING_DIM   = int(_p("rag.embedding.dimensions", 1024))
+
+# Reranking is a native-Ollama endpoint (no OpenAI equivalent exists), so it
+# talks to the same host with the "/v1" suffix stripped. It's attempted
+# opportunistically — see app/rag/embed.py — and skipped if the model isn't
+# deployed yet, so this doesn't have to be true on day one.
+RAG_RERANKER_BASE_URL = _p("rag.reranker.base_url", RAG_OLLAMA_BASE_URL.removesuffix("/v1").removesuffix("/"))
+RAG_RERANKER_MODEL    = _p("rag.reranker.model", "bge-reranker-v2-m3")
+RAG_RERANKER_ENABLED  = bool(_p("rag.reranker.enabled", True))
+
+# Chunking — word counts, not tokens: bge-m3 isn't a tiktoken-family model, so
+# an exact token count would need pulling in its tokenizer as a dependency
+# just to size chunks. Word count is a fine proxy for "roughly consistent
+# chunk size" and needs nothing extra.
+RAG_CHUNK_TARGET_WORDS  = int(_p("rag.chunking.target_words", 350))
+RAG_CHUNK_OVERLAP_WORDS = int(_p("rag.chunking.overlap_words", 40))
+
+# Retrieval
+RAG_CANDIDATE_K = int(_p("rag.retrieval.candidate_k", 25))  # fused before rerank
+RAG_TOP_K       = int(_p("rag.retrieval.top_k", 8))          # returned to the caller
+
+# Uploads
+RAG_UPLOAD_DIR = DATA_ROOT / "rag_uploads"
+RAG_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+RAG_MAX_UPLOAD_MB = int(_p("rag.max_upload_mb", 200))
+
 # Setup state — used by startup checks to detect missing config
 CONFIG_PATH  = _cfg_path
 CONFIG_FOUND = _cfg_path.exists()
