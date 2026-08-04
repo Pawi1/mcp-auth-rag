@@ -1,14 +1,19 @@
+<div class="doc-table-wrap">
 <table id="doc-list" class="doc-table"
        {% if documents and documents|selectattr("status", "in", ["pending", "processing"])|list %}
        hx-get="/rag/documents/fragment" hx-trigger="every 2s" hx-swap="outerHTML"
        {% endif %}>
+  <colgroup>
+    <col class="col-file"><col class="col-status"><col class="col-num">
+    <col class="col-num"><col class="col-date"><col class="col-actions">
+  </colgroup>
   <thead>
     <tr><th>File</th><th>Status</th><th>Pages</th><th>Chunks</th><th>Uploaded</th><th></th></tr>
   </thead>
   <tbody>
     {% for doc in documents %}
     <tr>
-      <td>{{ doc.filename }}</td>
+      <td class="col-file" title="{{ doc.filename }}">{{ doc.filename }}</td>
       <td><span class="status status-{{ doc.status }}">{{ doc.status }}</span>
         {% if doc.status == "error" and doc.error %}<div class="err-inline">{{ doc.error }}</div>{% endif %}
       </td>
@@ -27,3 +32,4 @@
     {% endfor %}
   </tbody>
 </table>
+</div>

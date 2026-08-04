@@ -33,9 +33,16 @@
   .btn-sm{padding:5px 10px;border-radius:5px;font-size:12px;border:none;cursor:pointer}
   .btn-danger{background:#fef2f2;color:#b91c1c}
   .btn-danger:hover{background:#fee2e2}
-  .doc-table{width:100%;border-collapse:collapse;font-size:14px}
+  .doc-table-wrap{overflow-x:auto}
+  .doc-table{width:100%;table-layout:fixed;border-collapse:collapse;font-size:14px}
   .doc-table th{text-align:left;color:#64748b;font-size:12px;text-transform:uppercase;padding:8px;border-bottom:1px solid #eee}
   .doc-table td{padding:8px;border-bottom:1px solid #f1f5f9}
+  .doc-table .col-file{width:40%}
+  .doc-table .col-status{width:15%}
+  .doc-table .col-num{width:10%}
+  .doc-table .col-date{width:17%}
+  .doc-table .col-actions{width:8%}
+  .doc-table td.col-file{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:0}
   .status{display:inline-block;padding:2px 8px;border-radius:99px;font-size:12px}
   .status-pending,.status-processing{background:#fef9c3;color:#854d0e}
   .status-done{background:#dcfce7;color:#166534}
