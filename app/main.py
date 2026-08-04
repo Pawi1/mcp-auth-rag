@@ -14,13 +14,15 @@ import contextlib
 import logging
 import sys
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 import uvicorn
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
-from starlette.routing import Route
+from starlette.routing import Mount, Route
+from starlette.staticfiles import StaticFiles
 
 from config import LOG_FILE, MCP_HOST, MCP_PORT, MCP_SERVER_NAME, SERVER_URL
 from oauth import (
@@ -28,6 +30,12 @@ from oauth import (
     oauth_authorize, oauth_login, oauth_login_post,
     oauth_metadata, oauth_protected_resource, oauth_clients_register,
     oauth_token,
+)
+import rag_store
+import rag_worker
+from rag_routes import (
+    rag_delete_document, rag_documents_fragment, rag_login, rag_login_post,
+    rag_logout, rag_panel, rag_search, rag_upload,
 )
 from server import mcp_server
 from users import _ensure_db_schema
@@ -102,9 +110,15 @@ async def lifespan(app: Starlette) -> AsyncIterator[None]:
     _ensure_tokens_table()
     load_tokens_from_db()
     load_clients_from_db()
+    await rag_store.init_stores()
+    rag_worker.start()
     async with session_manager.run():
         logger.info("StreamableHTTP session manager running")
-        yield
+        try:
+            yield
+        finally:
+            rag_worker.stop()
+            await rag_store.close_stores()
 
 
 app = Starlette(
@@ -121,6 +135,17 @@ app = Starlette(
         Route("/oauth/token",      endpoint=oauth_token,      methods=["POST"]),
         # MCP
         Route("/mcp", endpoint=handle_mcp, methods=["GET", "POST", "DELETE"]),
+        # RAG panel — browser session auth (rag_routes._SESSION_COOKIE), separate
+        # from the OAuth bearer tokens MCP clients use against /mcp
+        Route("/rag",                     endpoint=rag_panel,              methods=["GET"]),
+        Route("/rag/login",               endpoint=rag_login,              methods=["GET"]),
+        Route("/rag/login",               endpoint=rag_login_post,         methods=["POST"]),
+        Route("/rag/logout",              endpoint=rag_logout,             methods=["GET"]),
+        Route("/rag/documents",           endpoint=rag_upload,             methods=["POST"]),
+        Route("/rag/documents/fragment",  endpoint=rag_documents_fragment, methods=["GET"]),
+        Route("/rag/documents/{document_id}", endpoint=rag_delete_document, methods=["DELETE"]),
+        Route("/rag/search",              endpoint=rag_search,             methods=["POST"]),
+        Mount("/static", app=StaticFiles(directory=str(Path(__file__).parent / "static"))),
         # Health
         Route("/health", endpoint=lambda r: JSONResponse({"status": "ok", "server": MCP_SERVER_NAME})),
     ],

@@ -1,7 +1,9 @@
-"""Tests for server.py — the demo `whoami` tool and the auth gate in call_tool()."""
+"""Tests for server.py — the demo `whoami` tool, the RAG tools, and the auth
+gate in call_tool()."""
 
 import json
 import sqlite3
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -65,6 +67,70 @@ class TestWhoami:
         result = await server.call_tool("whoami", {})
         data = _result_json(result)
         assert data == {"username": "alice", "teams": ["admins", "beta"]}
+
+
+class TestRagSearch:
+    async def test_unauthenticated_call_is_rejected(self):
+        current_user.set(None)
+        result = await server.call_tool("rag_search", {"query": "test"})
+        data = _result_json(result)
+        assert "error" in data
+
+    async def test_calls_retrieval_search_with_the_caller_as_owner(self, monkeypatch):
+        import rag_retrieval
+        search_mock = AsyncMock(return_value=[
+            {"text": "found it", "filename": "paper.pdf", "page": 2, "section": "Wyniki", "document_id": "x"}
+        ])
+        monkeypatch.setattr(rag_retrieval, "search", search_mock)
+        current_user.set({"username": "alice", "teams": []})
+
+        result = await server.call_tool("rag_search", {"query": "wyniki badania", "top_k": 3})
+        data = _result_json(result)
+
+        assert data["results"][0]["text"] == "found it"
+        search_mock.assert_awaited_once_with("wyniki badania", "alice", top_k=3)
+
+    async def test_defaults_top_k_when_not_provided(self, monkeypatch):
+        import rag_retrieval
+        from config import RAG_TOP_K
+        search_mock = AsyncMock(return_value=[])
+        monkeypatch.setattr(rag_retrieval, "search", search_mock)
+        current_user.set({"username": "alice", "teams": []})
+
+        await server.call_tool("rag_search", {"query": "x"})
+        search_mock.assert_awaited_once_with("x", "alice", top_k=RAG_TOP_K)
+
+
+class TestRagListDocuments:
+    async def test_unauthenticated_call_is_rejected(self):
+        current_user.set(None)
+        result = await server.call_tool("rag_list_documents", {})
+        data = _result_json(result)
+        assert "error" in data
+
+    async def test_serializes_documents_for_the_caller(self, monkeypatch):
+        import datetime
+        import uuid
+        import rag_store
+
+        doc = {
+            "id": uuid.UUID("11111111-1111-1111-1111-111111111111"),
+            "filename": "paper.pdf", "format": "pdf", "status": "done", "error": None,
+            "page_count": 12, "chunk_count": 40,
+            "uploaded_at": datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc),
+            "processed_at": None,
+        }
+        list_mock = AsyncMock(return_value=[doc])
+        monkeypatch.setattr(rag_store, "list_documents", list_mock)
+        current_user.set({"username": "alice", "teams": []})
+
+        result = await server.call_tool("rag_list_documents", {})
+        data = _result_json(result)
+
+        list_mock.assert_awaited_once_with("alice")
+        assert data["documents"][0]["id"] == "11111111-1111-1111-1111-111111111111"
+        assert data["documents"][0]["uploaded_at"] == "2026-01-01T00:00:00+00:00"
+        assert data["documents"][0]["processed_at"] is None
 
 
 class TestToolCallAudit:

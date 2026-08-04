@@ -50,11 +50,46 @@ def _ok(data: dict) -> List[TextContent]:
     return [TextContent(type="text", text=json.dumps(data, indent=2, ensure_ascii=False))]
 
 
+def _serialize_document(d: dict) -> dict:
+    return {
+        "id": str(d["id"]),
+        "filename": d["filename"],
+        "format": d["format"],
+        "status": d["status"],
+        "error": d["error"],
+        "page_count": d["page_count"],
+        "chunk_count": d["chunk_count"],
+        "uploaded_at": d["uploaded_at"].isoformat() if d["uploaded_at"] else None,
+        "processed_at": d["processed_at"].isoformat() if d["processed_at"] else None,
+    }
+
+
 async def list_tools() -> List[Tool]:
     return [
         Tool(
             name="whoami",
             description="Return the identity of the currently authenticated user.",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="rag_search",
+            description=(
+                "Search the user's uploaded documents (PDF/DOCX/TXT/MD, uploaded via the /rag "
+                "panel) for relevant passages. Returns hybrid-search results (semantic + full-text, "
+                "reranked when available) with citations — filename, page, section."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "What to search for"},
+                    "top_k": {"type": "integer", "description": "Max results to return (default 8)"},
+                },
+                "required": ["query"],
+            },
+        ),
+        Tool(
+            name="rag_list_documents",
+            description="List the user's documents uploaded to the RAG panel, with ingest status.",
             inputSchema={"type": "object", "properties": {}},
         ),
     ]
@@ -72,6 +107,23 @@ async def call_tool(name: str, arguments: dict) -> List[TextContent]:
         logger.info(f"Tool call: {name} by {user['username']}")
         log_tool_call(user["username"], name)
         return _ok({"username": user["username"], "teams": user["teams"]})
+
+    if name == "rag_search":
+        logger.info(f"Tool call: {name} by {user['username']}")
+        log_tool_call(user["username"], name)
+        import rag_retrieval
+        from config import RAG_TOP_K
+        query = str(arguments.get("query", ""))
+        top_k = int(arguments.get("top_k") or RAG_TOP_K)
+        results = await rag_retrieval.search(query, user["username"], top_k=top_k)
+        return _ok({"results": results})
+
+    if name == "rag_list_documents":
+        logger.info(f"Tool call: {name} by {user['username']}")
+        log_tool_call(user["username"], name)
+        import rag_store
+        documents = await rag_store.list_documents(user["username"])
+        return _ok({"documents": [_serialize_document(d) for d in documents]})
 
     logger.warning(f"Tool call rejected: unknown tool {name!r} requested by {user['username']}")
     log_tool_call(user["username"], name, success=False, reason="unknown_tool")
