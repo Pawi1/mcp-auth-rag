@@ -1,4 +1,4 @@
-.PHONY: help dev test build-binary install uninstall start stop restart status logs clean
+.PHONY: help dev test build-binary install uninstall start stop restart status logs clean rag-up rag-down rag-logs
 
 APP_DIR     := app
 SERVICE_DIR := services
@@ -14,6 +14,7 @@ help:
 	@echo "  make install         Install the binary + systemd service (requires root)"
 	@echo "  make uninstall       Remove $(INSTALL_DIR) and the service file (requires root)"
 	@echo "  make start|stop|restart|status|logs   Manage the systemd service"
+	@echo "  make rag-up|rag-down|rag-logs         Manage the RAG Postgres/Qdrant containers"
 	@echo "  make clean           Remove build artifacts and the local venv"
 
 $(APP_DIR)/.venv/bin/python3:
@@ -36,6 +37,8 @@ build-binary: $(APP_DIR)/.venv/bin/python3
 		--hidden-import uvicorn.protocols.http.auto \
 		--hidden-import uvicorn.protocols.websockets.auto \
 		--hidden-import mcp.server.streamable_http \
+		--add-data "templates:templates" \
+		--add-data "static:static" \
 		main.py
 	@echo "✓ $(APP_DIR)/dist/$(SERVICE)"
 
@@ -78,6 +81,15 @@ status:
 
 logs:
 	@journalctl -u $(SERVICE) -f
+
+rag-up:
+	docker compose -f docker-compose.rag.yml up -d
+
+rag-down:
+	docker compose -f docker-compose.rag.yml down
+
+rag-logs:
+	docker compose -f docker-compose.rag.yml logs -f
 
 clean:
 	rm -rf $(APP_DIR)/.venv $(APP_DIR)/dist $(APP_DIR)/build $(APP_DIR)/*.spec $(APP_DIR)/__pycache__ tests/__pycache__ .pytest_cache

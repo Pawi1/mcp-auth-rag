@@ -27,7 +27,10 @@ Please include:
 In scope: `app/auth.py`, `app/oauth.py`, `app/main.py`'s `/mcp` auth gate,
 `app/users.py`'s password handling. Anything that could let a request
 reach `call_tool()` without a valid, currently-active session, or that
-weakens password/token storage.
+weakens password/token storage. Also in scope: `app/rag_routes.py`'s
+session-cookie gate (anything that could let a request reach an upload,
+delete, or search endpoint without a valid `rag_session` cookie, or that
+lets one user read/delete another user's documents).
 
 Out of scope: the demo `whoami` tool itself, deployment scripts, and
 anything in `services/` (those are examples, not hardened configs — treat
@@ -64,6 +67,22 @@ generated secrets, default users, etc. as yours to secure per-deployment).
   this as a complementary attestation layer for clients that can't hold
   a backend secret, but it's a separate, non-trivial feature this
   starter doesn't implement.
+- The RAG panel (`/rag`) authenticates humans with a separate session
+  cookie (`rag_session`, `SameSite=Strict`, `HttpOnly`), not the OAuth
+  bearer tokens `/mcp` uses. `SameSite=Strict` is the CSRF defense on
+  upload/delete/search — it's simpler than a synchronizer-token scheme and
+  sufficient here since, unlike the OAuth login flow, nothing needs the
+  panel to work from a cross-site link. Every RAG query (`rag_store.*`) is
+  scoped to `current_user`'s username, so there's no cross-user document
+  access by design — a bug here would be a real vulnerability, not a
+  known tradeoff.
+- Uploaded files aren't scanned or sandboxed — PDF/DOCX/TXT/MD parsing
+  (`rag_ingest.py`) runs against whatever bytes are uploaded, trusting
+  PyMuPDF/`python-docx` to handle malformed input safely. Upload is
+  restricted to authenticated users, and files are only ever parsed for
+  text (never executed), which bounds the blast radius of a parser bug,
+  but a malicious PDF/DOCX aimed at a parser vulnerability is not
+  something this repo defends against beyond that.
 - This server is a self-contained authorization server + resource
   server — it mints and validates its own tokens, and never forwards a
   client's token (or a token it minted on a user's behalf) to any

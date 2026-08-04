@@ -9,16 +9,17 @@ make test    # runs the test suite
 
 ## Before opening a PR
 
-- `make test` passes (142 tests today — add tests for whatever you change,
+- `make test` passes (277 tests today — add tests for whatever you change,
   especially anything in `app/auth.py`/`app/oauth.py`/`app/main.py`'s
   `/mcp` handler; see [SECURITY.md](SECURITY.md) for why those files get
   extra scrutiny).
-- Keep `app/server.py` free of anything beyond the one demo tool — this
-  repo is a starting point, not a place to accumulate example tools. If
-  you want to contribute a second example, open an issue first to discuss
-  where it should live.
-- No new runtime dependencies without a good reason — the point of this
-  repo is staying small enough to read in one sitting.
+- New tools go in `app/server.py` (`whoami`, `rag_search`, `rag_list_documents`
+  are the existing pattern to follow: a `Tool()` entry, a dispatch branch,
+  `log_tool_call`). Domain logic that isn't "glue between a tool and the rest
+  of the app" belongs in its own module (see `rag_*.py`), not inline in
+  `server.py`.
+- No new runtime dependencies without a good reason — this repo stays small
+  enough to read in a sitting, not literally dependency-free.
 
 ## Reporting bugs
 

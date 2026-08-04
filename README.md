@@ -32,8 +32,14 @@ prove the auth chain works end to end. Your actual tools go in `app/server.py`.
 | `app/auth.py` | JWT verification (signature, expiry, audience) |
 | `app/users.py` | User accounts (argon2 password hashing), login attempt + tool-call audit logging |
 | `app/context.py` | `ContextVar` carrying the authenticated user into your tool handlers |
-| `app/server.py` | MCP tool definitions — **this is where you add your own tools** |
+| `app/server.py` | MCP tool definitions — `whoami`, `rag_search`, `rag_list_documents` |
 | `app/config.py` | Config loader (`config.json` + env var overrides for secrets) |
+| `app/rag_ingest.py` | PDF/DOCX/TXT/MD parsing + hierarchical chunking |
+| `app/rag_embed.py` | Embedding + reranking client (Ollama, OpenAI-compatible) |
+| `app/rag_store.py` | Postgres (metadata, full-text search, job queue) + Qdrant (vectors) |
+| `app/rag_retrieval.py` | Hybrid search: Qdrant ANN + Postgres FTS, fused (RRF), reranked |
+| `app/rag_worker.py` | Background ingest worker (polls the Postgres job queue) |
+| `app/rag_routes.py` | `/rag` web panel — upload, document list, search |
 
 ## Why the auth gate is two checks, not one
 
@@ -135,15 +141,122 @@ if name == "my_tool":
     return _ok({"result": do_something(arguments)})
 ```
 
+## RAG — document upload, search, and MCP tools
+
+Upload PDFs, DOCX, TXT, or Markdown through the `/rag` web panel; the server
+parses, chunks, and embeds them in the background, and both the panel and
+Claude (via `rag_search`) can search the result. There's no generation model
+in this server — retrieval only. The MCP tools hand chunks + citations back
+to whatever client is connected, and *that* client's own model writes the
+answer. That split keeps this repo's job to what it's actually good at
+(auth, transport, retrieval) instead of half-building a second LLM
+integration next to whatever the client already has.
+
+### Architecture
+
+```
+Upload (panel) → Postgres (documents row, status=pending) → ingest_jobs queue
+                                                                    │
+                                            rag_worker.py polls (SKIP LOCKED)
+                                                                    │
+                     rag_ingest.py: parse → hierarchical chunk → rag_embed.py
+                                                                    │
+                             rag_store.py: chunk text → Postgres, vectors → Qdrant
+
+Search (panel or rag_search tool)
+  query → embed → [Qdrant ANN, Postgres full-text] → RRF fusion → rerank → top_k
+```
+
+- **Chunking** (`rag_ingest.py`) never crosses a section boundary — PDF
+  headings are detected by font size relative to the document's body text,
+  DOCX by paragraph style, Markdown by `#` headers. Within a section, text is
+  split into ~350-word windows with a 40-word overlap. Every chunk is
+  embedded with a `[filename > section]` prefix, so it's not embedded in
+  isolation from what document/section it came from.
+- **Storage** is Postgres (chunk text, full-text search via `tsvector`, the
+  `documents`/`ingest_jobs` tables) + Qdrant (vectors only, with just enough
+  payload — `owner`, `document_id` — to filter). Both are separate from
+  `app.db` (the auth tables) — very different scale and access pattern, no
+  reason to share a database. See `docker-compose.rag.yml`.
+- **Retrieval** (`rag_retrieval.py`) fuses Qdrant's dense ANN search with
+  Postgres full-text search by Reciprocal Rank Fusion (rank position, not raw
+  score — the two live on incomparable scales), then optionally reranks the
+  fused candidates with a cross-encoder (`bge-reranker-v2-m3`) for a final
+  precision pass. Reranking is opportunistic: if that model isn't deployed on
+  your Ollama yet, `rag_embed.rerank()` fails fast and search falls back to
+  the fusion order — no config change needed once you do pull it.
+- **Ingest is async** — a 150-page PDF's worth of chunking + embedding
+  doesn't block the upload request. `rag_worker.py` polls `ingest_jobs` with
+  `FOR UPDATE SKIP LOCKED`, so it's also safe to run more than one worker
+  process against the same Postgres later without any code change.
+
+### Quick start
+
+```bash
+make rag-up   # starts Postgres + Qdrant (docker-compose.rag.yml)
+make dev      # same as before — the app now also serves /rag
+```
+
+Add to `config.json` (see `services/config.example.json` for the full
+shape):
+
+```json
+"rag": {
+  "postgres": { "dsn": "postgresql://rag:rag@localhost:5433/rag" },
+  "qdrant":   { "url": "http://localhost:6333", "collection": "rag_chunks" },
+  "embedding": { "base_url": "https://your-ollama-host/v1", "model": "bge-m3", "dimensions": 1024 },
+  "reranker":  { "base_url": "https://your-ollama-host", "model": "bge-reranker-v2-m3", "enabled": true }
+}
+```
+
+`embedding.base_url` is an OpenAI-compatible endpoint (`POST {base_url}/embeddings`);
+`reranker.base_url` is native Ollama (`POST {base_url}/api/rerank` — there's
+no OpenAI-spec equivalent). If your Ollama needs a bearer token, set
+`RAG_OLLAMA_API_KEY` as an env var — never put it in `config.json`.
+
+Sign in at `/rag` with the same admin account created by `--setup`. That
+session is a separate cookie (`rag_session`, `SameSite=Strict`) from the
+OAuth bearer tokens MCP clients use against `/mcp` — the panel is for a
+human in a browser, not an MCP client.
+
+### MCP tools
+
+- **`rag_search(query, top_k?)`** — hybrid search + rerank, returns chunks
+  with `filename`/`page`/`section` citations.
+- **`rag_list_documents()`** — what's been uploaded and its ingest status,
+  so the caller can check before searching.
+
+### Known tradeoffs
+
+- Uploaded files live on local disk (`paths.data_root/rag_uploads`), keyed by
+  document ID. Fine for one process; if you ever run `rag_worker.py` across
+  multiple pods, that needs shared storage (a volume, or S3/MinIO) — same
+  category of tradeoff as the in-memory caches called out in
+  [SECURITY.md](SECURITY.md).
+- Upload size is capped by `rag.max_upload_mb` (default 200), checked against
+  `Content-Length` before reading — a client that lies about that header
+  isn't stopped by this check alone.
+- No LLM-generated **Contextual Retrieval** (Anthropic's technique of having
+  a generation model write a bespoke situating sentence per chunk) — the
+  `[filename > section]` prefix is a free, deterministic stand-in that gets
+  some of the same benefit. Adding real contextual retrieval means wiring a
+  generation-model call into `rag_ingest.py`, which this repo doesn't do.
+
 ## Testing
 
 ```bash
 make test
 ```
 
-200 tests, ~76% line coverage (`pytest --cov=app`). `app/config.py` and the
+277 tests, ~76% line coverage (`pytest --cov=app`). `app/config.py` and the
 interactive CLI wizard (`--setup`/`--adduser`) are the main gaps — they're
 either constants or `input()`-driven, both low value to unit test.
+`rag_store.py`'s Postgres/Qdrant queries are the other big one: this suite
+mocks `rag_store` at the call boundary everywhere else (`rag_ingest`,
+`rag_retrieval`, `rag_worker`, `rag_routes`), deliberately not the queries
+themselves — asserting a mocked driver got called with the SQL string you
+wrote mostly just re-asserts the SQL string you wrote. Exercise those against
+`make rag-up` locally instead.
 
 ## Deployment
 
@@ -153,7 +266,11 @@ sudo make install   # installs + registers a systemd service
 sudo make start
 ```
 
-See `services/` for the systemd unit and env file template.
+See `services/` for the systemd unit and env file template. The RAG feature
+needs Postgres + Qdrant reachable wherever the binary runs — `make rag-up`
+(`docker-compose.rag.yml`) for a single host, or your own Postgres/Qdrant
+deployment (e.g. CloudNativePG + the Qdrant Helm chart) if you're on
+Kubernetes.
 
 ## What this deliberately leaves out
 
