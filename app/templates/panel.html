@@ -13,10 +13,23 @@
   .topbar a{color:#666;font-size:13px;text-decoration:none}
   .card{background:#fff;border-radius:10px;padding:24px;box-shadow:0 2px 16px #0001;margin-bottom:24px}
   h2{margin-top:0;font-size:16px;color:#1e3a5f}
-  input[type=file]{display:block;margin:12px 0}
   input[type=text]{width:100%;padding:10px 12px;border:1px solid #ddd;border-radius:6px;font-size:15px}
-  .btn{background:#2563eb;color:#fff;border:none;padding:10px 18px;border-radius:6px;font-size:14px;cursor:pointer}
+  .btn{background:#2563eb;color:#fff;border:none;padding:10px 18px;border-radius:6px;font-size:14px;cursor:pointer;margin-top:14px}
   .btn:hover{background:#1d4ed8}
+  .btn:disabled{background:#93c5fd;cursor:default}
+  .dropzone{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;
+    text-align:center;cursor:pointer;border:2px dashed #cbd5e1;border-radius:10px;padding:28px 20px;
+    background:#f8fafc;transition:border-color .15s ease,background .15s ease}
+  .dropzone:hover{border-color:#93c5fd;background:#f0f7ff}
+  .dropzone.dragover{border-color:#2563eb;background:#eff6ff}
+  .dropzone svg{width:26px;height:26px;stroke:#64748b;transition:stroke .15s ease}
+  .dropzone.dragover svg{stroke:#2563eb}
+  .dropzone-text{font-size:14px;color:#475569}
+  .dropzone-text strong{color:#1e3a5f}
+  .dropzone-hint{font-size:12px;color:#94a3b8}
+  .dropzone-files{font-size:13px;color:#2563eb;font-weight:500;word-break:break-word;max-width:100%}
+  .progress-track{height:6px;background:#e2e8f0;border-radius:99px;overflow:hidden;margin-top:14px}
+  .progress-bar{height:100%;width:0;background:#2563eb;transition:width .2s ease}
   .btn-sm{padding:5px 10px;border-radius:5px;font-size:12px;border:none;cursor:pointer}
   .btn-danger{background:#fef2f2;color:#b91c1c}
   .btn-danger:hover{background:#fee2e2}
@@ -45,9 +58,21 @@
 
   <div class="card">
     <h2>Upload documents</h2>
-    <form hx-post="/rag/documents" hx-target="#doc-list" hx-swap="outerHTML" hx-encoding="multipart/form-data">
-      <input type="file" name="files" multiple accept=".pdf,.docx,.txt,.md" required>
-      <button class="btn" type="submit">Upload</button>
+    <form id="upload-form" hx-post="/rag/documents" hx-target="#doc-list" hx-swap="outerHTML" hx-encoding="multipart/form-data">
+      <label class="dropzone" id="dropzone" for="file-input">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 16V4M12 4l-4 4M12 4l4 4"/>
+          <path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/>
+        </svg>
+        <div class="dropzone-text"><strong>Click to choose files</strong> or drag and drop</div>
+        <div class="dropzone-hint">PDF, DOCX, TXT, or MD</div>
+        <div class="dropzone-files" id="dropzone-files"></div>
+        <input type="file" id="file-input" name="files" multiple accept=".pdf,.docx,.txt,.md" required hidden>
+      </label>
+      <div class="progress-track" id="progress-track" hidden>
+        <div class="progress-bar" id="progress-bar"></div>
+      </div>
+      <button class="btn" type="submit" id="upload-btn">Upload</button>
     </form>
   </div>
 
@@ -64,5 +89,57 @@
     <div id="search-results"></div>
   </div>
 </div>
+<script>
+(function () {
+  var dropzone = document.getElementById("dropzone");
+  var input = document.getElementById("file-input");
+  var fileList = document.getElementById("dropzone-files");
+  var track = document.getElementById("progress-track");
+  var bar = document.getElementById("progress-bar");
+  var btn = document.getElementById("upload-btn");
+
+  function showChosenFiles(files) {
+    if (!files || files.length === 0) { fileList.textContent = ""; return; }
+    var names = [];
+    for (var i = 0; i < files.length; i++) names.push(files[i].name);
+    fileList.textContent = names.join(", ");
+  }
+
+  ["dragenter", "dragover"].forEach(function (evt) {
+    dropzone.addEventListener(evt, function (e) {
+      e.preventDefault();
+      dropzone.classList.add("dragover");
+    });
+  });
+  ["dragleave", "drop"].forEach(function (evt) {
+    dropzone.addEventListener(evt, function (e) {
+      e.preventDefault();
+      dropzone.classList.remove("dragover");
+    });
+  });
+  dropzone.addEventListener("drop", function (e) {
+    if (e.dataTransfer && e.dataTransfer.files.length) {
+      input.files = e.dataTransfer.files;
+      showChosenFiles(input.files);
+    }
+  });
+  input.addEventListener("change", function () { showChosenFiles(input.files); });
+
+  document.body.addEventListener("htmx:xhr:progress", function (evt) {
+    if (evt.detail.elt.id !== "upload-form" || !evt.detail.total) return;
+    track.hidden = false;
+    bar.style.width = Math.round((evt.detail.loaded / evt.detail.total) * 100) + "%";
+    btn.disabled = true;
+  });
+  document.body.addEventListener("htmx:afterRequest", function (evt) {
+    if (evt.detail.elt.id !== "upload-form") return;
+    track.hidden = true;
+    bar.style.width = "0%";
+    btn.disabled = false;
+    input.value = "";
+    showChosenFiles(null);
+  });
+})();
+</script>
 </body>
 </html>

@@ -115,6 +115,13 @@ class TestPanel:
         assert resp.status_code == 200
         assert "alice" in resp.text
 
+    def test_renders_the_upload_dropzone(self, logged_in_client, monkeypatch):
+        monkeypatch.setattr(rag_store, "list_documents", AsyncMock(return_value=[]))
+        resp = logged_in_client.get("/rag")
+        assert 'id="dropzone"' in resp.text
+        assert 'id="file-input"' in resp.text
+        assert 'id="progress-track"' in resp.text
+
 
 class TestUpload:
     def test_unsupported_format_is_not_queued(self, logged_in_client, monkeypatch):
