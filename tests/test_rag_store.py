@@ -1,17 +1,29 @@
 """Tests for rag_store.py.
 
-Only upload_path() is a pure function — everything else in this module is a
-thin wrapper around live Postgres/Qdrant queries (schema creation, SKIP
-LOCKED job claiming, hybrid search), which this suite deliberately doesn't
-mock: a mocked asyncpg/qdrant-client test would mostly just assert "the SQL
-string I wrote matches the SQL string I wrote," not catch real bugs. Exercise
-those against docker-compose.rag.yml locally (see README) — CI stays
-dependency-free, matching the rest of this repo's test suite.
+upload_path() and _no_nul() are pure functions — everything else in this
+module is a thin wrapper around live Postgres/Qdrant queries (schema
+creation, SKIP LOCKED job claiming, hybrid search), which this suite
+deliberately doesn't mock: a mocked asyncpg/qdrant-client test would mostly
+just assert "the SQL string I wrote matches the SQL string I wrote," not
+catch real bugs. Exercise those against docker-compose.rag.yml locally (see
+README) — CI stays dependency-free, matching the rest of this repo's test
+suite.
 """
 
 import uuid
 
 import rag_store
+
+
+class TestNoNul:
+    def test_strips_nul_bytes(self):
+        assert rag_store._no_nul("hello\x00world") == "helloworld"
+
+    def test_leaves_clean_text_unchanged(self):
+        assert rag_store._no_nul("hello world") == "hello world"
+
+    def test_passes_through_none(self):
+        assert rag_store._no_nul(None) is None
 
 
 class TestUploadPath:

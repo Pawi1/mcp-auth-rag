@@ -221,6 +221,15 @@ async def set_document_status(document_id, status: str, error: str = None, page_
 # Chunks
 # ---------------------------------------------------------------------------
 
+def _no_nul(value):
+    """Postgres's text columns reject embedded NUL bytes outright. rag_ingest.py
+    already strips control chars at extraction time — this is the second,
+    trust-boundary line of defense at the DB call itself, so nothing that
+    reaches here can fail this specific way, regardless of what upstream
+    source it came from."""
+    return value.replace("\x00", "") if isinstance(value, str) else value
+
+
 async def insert_chunks(document_id, owner: str, chunks: list[dict], embeddings: list[list[float]]) -> None:
     """chunks: [{ordinal, page, section, text, word_count}, ...], same order as embeddings."""
     if not chunks:
@@ -237,7 +246,7 @@ async def insert_chunks(document_id, owner: str, chunks: list[dict], embeddings:
                 """INSERT INTO chunks (id, document_id, ordinal, page, section, text, word_count)
                    VALUES ($1, $2, $3, $4, $5, $6, $7)""",
                 [
-                    (ids[i], document_id, c["ordinal"], c["page"], c["section"], c["text"], c["word_count"])
+                    (ids[i], document_id, c["ordinal"], c["page"], _no_nul(c["section"]), _no_nul(c["text"]), c["word_count"])
                     for i, c in enumerate(chunks)
                 ],
             )
