@@ -36,5 +36,7 @@ _cfg.RAG_CANDIDATE_K = 25
 _cfg.RAG_TOP_K = 8
 _cfg.RAG_UPLOAD_DIR = Path("/tmp/_test_mcp_auth_rag_uploads")
 _cfg.RAG_MAX_UPLOAD_MB = 200
+_cfg.RAG_OCR_LANGUAGES = "pol+eng"
+_cfg.RAG_OCR_DPI = 200
 
 sys.modules.setdefault("config", _cfg)

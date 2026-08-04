@@ -25,7 +25,7 @@ from typing import Optional
 import fitz  # PyMuPDF
 from docx import Document as DocxDocument
 
-from config import RAG_CHUNK_OVERLAP_WORDS, RAG_CHUNK_TARGET_WORDS
+from config import RAG_CHUNK_OVERLAP_WORDS, RAG_CHUNK_TARGET_WORDS, RAG_OCR_DPI, RAG_OCR_LANGUAGES
 
 logger = logging.getLogger("mcp-auth-starter")
 
@@ -81,12 +81,28 @@ def content_hash(data: bytes) -> str:
 def parse_pdf(data: bytes) -> tuple[list[Paragraph], int]:
     doc = fitz.open(stream=data, filetype="pdf")
     try:
-        body_size = _pdf_body_font_size(doc)
+        # single pass per page: get each page's blocks (OCR fallback if the
+        # page has no text layer — a scanned page/document), cache them, and
+        # collect font sizes for the body-size baseline at the same time, so
+        # a scanned page is never OCR'd twice.
+        pages_blocks: list[tuple[int, list]] = []
+        sizes: list[float] = []
+        for page_num, page in enumerate(doc, start=1):
+            blocks = page.get_text("dict")["blocks"]
+            if not _has_text(blocks):
+                blocks = _ocr_page_blocks(page)
+            pages_blocks.append((page_num, blocks))
+            for block in blocks:
+                for line in block.get("lines", []):
+                    for span in line.get("spans", []):
+                        if span["text"].strip():
+                            sizes.append(span["size"])
+        body_size = median(sizes) if sizes else 11.0
+
         lines: list[Paragraph] = []
         current_heading: Optional[str] = None
-
-        for page_num, page in enumerate(doc, start=1):
-            for block in page.get_text("dict")["blocks"]:
+        for page_num, blocks in pages_blocks:
+            for block in blocks:
                 for line in block.get("lines", []):
                     spans = [s for s in line.get("spans", []) if s["text"].strip()]
                     if not spans:
@@ -103,17 +119,27 @@ def parse_pdf(data: bytes) -> tuple[list[Paragraph], int]:
         doc.close()
 
 
-def _pdf_body_font_size(doc) -> float:
-    """Median font size across the whole doc, used as the 'body text'
-    baseline so heading detection isn't thrown off by one oddly-set page."""
-    sizes = []
-    for page in doc:
-        for block in page.get_text("dict")["blocks"]:
-            for line in block.get("lines", []):
-                for span in line.get("spans", []):
-                    if span["text"].strip():
-                        sizes.append(span["size"])
-    return median(sizes) if sizes else 11.0
+def _has_text(blocks: list) -> bool:
+    return any(
+        span["text"].strip()
+        for block in blocks
+        for line in block.get("lines", [])
+        for span in line.get("spans", [])
+    )
+
+
+def _ocr_page_blocks(page) -> list:
+    """Scanned page (image, no text layer) — fall back to PyMuPDF's built-in
+    Tesseract OCR integration. Best-effort: if Tesseract isn't installed on
+    this machine (see README) or OCR otherwise fails, the page just stays
+    textless rather than failing the whole document."""
+    try:
+        textpage = page.get_textpage_ocr(language=RAG_OCR_LANGUAGES, dpi=RAG_OCR_DPI, full=True)
+        logger.info(f"OCR'd page {page.number + 1} (no text layer)")
+        return page.get_text("dict", textpage=textpage)["blocks"]
+    except Exception as e:
+        logger.warning(f"OCR fallback failed for page {page.number + 1}: {e}")
+        return []
 
 
 def _looks_like_heading(text: str, size: float, body_size: float) -> bool:

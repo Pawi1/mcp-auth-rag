@@ -92,6 +92,13 @@ RAG_RERANKER_ENABLED  = bool(_p("rag.reranker.enabled", True))
 RAG_CHUNK_TARGET_WORDS  = int(_p("rag.chunking.target_words", 350))
 RAG_CHUNK_OVERLAP_WORDS = int(_p("rag.chunking.overlap_words", 40))
 
+# OCR fallback for scanned PDF pages (no text layer) — via PyMuPDF's built-in
+# Tesseract integration, so no extra Python dependency, only the system
+# tesseract-ocr binary + language packs (see README). Best-effort: a page
+# just stays textless if OCR isn't available or fails.
+RAG_OCR_LANGUAGES = _p("rag.ocr.languages", "pol+eng")
+RAG_OCR_DPI       = int(_p("rag.ocr.dpi", 200))
+
 # Retrieval
 RAG_CANDIDATE_K = int(_p("rag.retrieval.candidate_k", 25))  # fused before rerank
 RAG_TOP_K       = int(_p("rag.retrieval.top_k", 8))          # returned to the caller

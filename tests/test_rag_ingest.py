@@ -212,3 +212,66 @@ class TestIngestDocument:
             await ri.ingest_document("doc-1", "alice", "notes.md", "md", b"# H\n\ntext")
 
         status_mock.assert_awaited_once_with("doc-1", "error", error="ollama down")
+
+
+class TestOcrFallback:
+    """OCR runs through PyMuPDF's built-in Tesseract integration, which
+    needs the system tesseract-ocr binary — not assumed present in this test
+    environment, so these mock fitz.Page.get_textpage_ocr() rather than
+    exercising real OCR."""
+
+    def test_has_text_true_only_with_non_blank_spans(self):
+        assert ri._has_text([]) is False
+        assert ri._has_text([{"lines": [{"spans": [{"text": "   "}]}]}]) is False
+        assert ri._has_text([{"lines": [{"spans": [{"text": "hello"}]}]}]) is True
+
+    def test_blank_page_falls_back_to_ocr(self, monkeypatch):
+        calls = []
+
+        def fake_get_textpage_ocr(self, language=None, dpi=None, full=None):
+            calls.append((language, dpi, full))
+            return "FAKE_TEXTPAGE"
+
+        original_get_text = fitz.Page.get_text
+
+        def fake_get_text(self, *args, **kwargs):
+            if kwargs.get("textpage") == "FAKE_TEXTPAGE":
+                return {"blocks": [{"lines": [{"spans": [{"text": "OCRed text", "size": 12.0}]}]}]}
+            return original_get_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(fitz.Page, "get_textpage_ocr", fake_get_textpage_ocr)
+        monkeypatch.setattr(fitz.Page, "get_text", fake_get_text)
+
+        doc = fitz.open()
+        doc.new_page()  # no inserted text — no text layer at all
+        pdf_bytes = doc.tobytes()
+        doc.close()
+
+        paragraphs, page_count = ri.parse_pdf(pdf_bytes)
+        assert page_count == 1
+        assert any("OCRed text" in p.text for p in paragraphs)
+        assert calls == [(ri.RAG_OCR_LANGUAGES, ri.RAG_OCR_DPI, True)]
+
+    def test_ocr_failure_leaves_page_textless_without_crashing(self, monkeypatch):
+        def raising_get_textpage_ocr(self, **kwargs):
+            raise RuntimeError("tesseract not found")
+
+        monkeypatch.setattr(fitz.Page, "get_textpage_ocr", raising_get_textpage_ocr)
+
+        doc = fitz.open()
+        doc.new_page()
+        pdf_bytes = doc.tobytes()
+        doc.close()
+
+        paragraphs, page_count = ri.parse_pdf(pdf_bytes)
+        assert page_count == 1
+        assert paragraphs == []
+
+    def test_page_with_real_text_never_triggers_ocr(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(fitz.Page, "get_textpage_ocr", lambda self, **kw: calls.append(1))
+
+        pdf = _make_pdf([("Heading", 20, "word")])
+        paragraphs, _ = ri.parse_pdf(pdf)
+        assert paragraphs  # got real text
+        assert calls == []

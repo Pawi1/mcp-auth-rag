@@ -35,6 +35,10 @@
       "target_words": 350,
       "overlap_words": 40
     },
+    "ocr": {
+      "languages": "pol+eng",
+      "dpi": 200
+    },
     "retrieval": {
       "candidate_k": 25,
       "top_k": 8

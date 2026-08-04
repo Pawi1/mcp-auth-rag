@@ -184,6 +184,12 @@ Search (panel or rag_search tool)
   doesn't block the upload request. `rag_worker.py` polls `ingest_jobs` with
   `FOR UPDATE SKIP LOCKED`, so it's also safe to run more than one worker
   process against the same Postgres later without any code change.
+- **Scanned PDFs** (no text layer — common for older/archival papers) fall
+  back to OCR per-page via PyMuPDF's built-in Tesseract integration, so
+  there's no extra Python dependency — just the system `tesseract-ocr`
+  binary (see Quick start below). Pages that already have a text layer never
+  touch OCR; if Tesseract isn't installed, a scanned page just stays
+  textless instead of failing the whole document.
 
 ### Quick start
 
@@ -191,6 +197,19 @@ Search (panel or rag_search tool)
 make rag-up   # starts Postgres + Qdrant (docker-compose.rag.yml)
 make dev      # same as before — the app now also serves /rag
 ```
+
+For scanned PDFs, also install Tesseract (only needed on the machine running
+`main.py`/`rag_worker.py` — Postgres/Qdrant don't touch it):
+
+```bash
+# Debian/Ubuntu
+sudo apt install tesseract-ocr tesseract-ocr-pol
+# Fedora/openSUSE
+sudo dnf install tesseract tesseract-langpack-pol   # or: sudo zypper install tesseract-ocr tesseract-ocr-traineddata-polish
+```
+
+`rag.ocr.languages` (default `pol+eng`) picks which trained language data
+Tesseract uses — set it to whatever matches your documents.
 
 Add to `config.json` (see `services/config.example.json` for the full
 shape):
@@ -236,6 +255,12 @@ human in a browser, not an MCP client.
   `[filename > section]` prefix is a free, deterministic stand-in that gets
   some of the same benefit. Adding real contextual retrieval means wiring a
   generation-model call into `rag_ingest.py`, which this repo doesn't do.
+- OCR is slow relative to native text extraction (a whole-page render +
+  Tesseract inference per page) — fine since ingest already runs in the
+  background, but a long scanned PDF will visibly sit in `processing` for a
+  while. OCR'd text also has no reliable font-size signal for heading
+  detection (it's a bounding-box estimate, not real metadata), so section
+  boundaries on scanned pages are noisier than on text-layer pages.
 
 ## Testing
 
