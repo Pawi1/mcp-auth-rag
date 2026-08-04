@@ -20,7 +20,10 @@ help:
 	@echo "  make clean           Remove build artifacts and the local venv"
 
 $(APP_DIR)/.venv/bin/python3:
-	python3 -m venv $(APP_DIR)/.venv
+	# --copies: on some mounted/overlay filesystems (containers, VMs) venv's
+	# default symlink for bin/python3 silently fails to create while the
+	# rest of the venv succeeds — copying the interpreter sidesteps that.
+	python3 -m venv --copies $(APP_DIR)/.venv
 	$(APP_DIR)/.venv/bin/pip install --quiet -r $(APP_DIR)/requirements.txt
 
 dev: $(APP_DIR)/.venv/bin/python3
