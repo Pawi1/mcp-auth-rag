@@ -92,6 +92,24 @@ async def list_tools() -> List[Tool]:
             description="List the user's documents uploaded to the RAG panel, with ingest status.",
             inputSchema={"type": "object", "properties": {}},
         ),
+        Tool(
+            name="rag_get_context",
+            description=(
+                "Expand one rag_search result into more surrounding text from the same document. "
+                "Use document_id and ordinal from a rag_search hit that looks worth reading further — "
+                "returns that chunk plus the ones immediately before/after it, concatenated in order."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "document_id": {"type": "string", "description": "document_id from a rag_search result"},
+                    "ordinal": {"type": "integer", "description": "ordinal from that same rag_search result"},
+                    "chunks_before": {"type": "integer", "description": "Chunks to include before it (default 2, max 10)"},
+                    "chunks_after": {"type": "integer", "description": "Chunks to include after it (default 2, max 10)"},
+                },
+                "required": ["document_id", "ordinal"],
+            },
+        ),
     ]
 
 
@@ -124,6 +142,21 @@ async def call_tool(name: str, arguments: dict) -> List[TextContent]:
         import rag_store
         documents = await rag_store.list_documents(user["username"])
         return _ok({"documents": [_serialize_document(d) for d in documents]})
+
+    if name == "rag_get_context":
+        logger.info(f"Tool call: {name} by {user['username']}")
+        log_tool_call(user["username"], name)
+        import rag_retrieval
+        document_id = str(arguments.get("document_id", ""))
+        ordinal = int(arguments.get("ordinal", 0))
+        chunks_before = int(arguments.get("chunks_before") or 2)
+        chunks_after = int(arguments.get("chunks_after") or 2)
+        context = await rag_retrieval.get_context(
+            document_id, ordinal, user["username"], chunks_before=chunks_before, chunks_after=chunks_after
+        )
+        if context is None:
+            return _ok({"error": "No such document/ordinal, or it's not yours"})
+        return _ok(context)
 
     logger.warning(f"Tool call rejected: unknown tool {name!r} requested by {user['username']}")
     log_tool_call(user["username"], name, success=False, reason="unknown_tool")

@@ -245,9 +245,14 @@ human in a browser, not an MCP client.
 ### MCP tools
 
 - **`rag_search(query, top_k?)`** — hybrid search + rerank, returns chunks
-  with `filename`/`page`/`section` citations.
+  with `filename`/`page`/`section`/`document_id`/`ordinal` citations.
 - **`rag_list_documents()`** — what's been uploaded and its ingest status,
   so the caller can check before searching.
+- **`rag_get_context(document_id, ordinal, chunks_before?, chunks_after?)`**
+  — expands one `rag_search` hit into a bigger contiguous passage (that
+  chunk plus up to 10 chunks before/after it, default 2 each) instead of
+  just the single ~350-word chunk that matched. `document_id`/`ordinal`
+  come straight off a `rag_search` result.
 
 ### Known tradeoffs
 
@@ -277,7 +282,7 @@ human in a browser, not an MCP client.
 make test
 ```
 
-277 tests, ~76% line coverage (`pytest --cov=app`). `app/config.py` and the
+312 tests, ~76% line coverage (`pytest --cov=app`). `app/config.py` and the
 interactive CLI wizard (`--setup`/`--adduser`) are the main gaps — they're
 either constants or `input()`-driven, both low value to unit test.
 `rag_store.py`'s Postgres/Qdrant queries are the other big one: this suite

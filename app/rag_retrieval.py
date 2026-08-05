@@ -16,6 +16,7 @@ from config import RAG_CANDIDATE_K, RAG_TOP_K
 logger = logging.getLogger("mcp-auth-starter")
 
 _RRF_K = 60  # standard constant (Cormack et al.) — dampens the influence of any single ranked list
+_CONTEXT_WINDOW_MAX = 10  # clamp chunks_before/chunks_after so get_context() can't be asked for a whole document
 
 
 def reciprocal_rank_fusion(ranked_lists: list[list[str]], k: int = _RRF_K) -> list[str]:
@@ -32,7 +33,10 @@ def reciprocal_rank_fusion(ranked_lists: list[list[str]], k: int = _RRF_K) -> li
 
 
 async def search(query: str, owner: str, top_k: int = RAG_TOP_K, candidate_k: int = RAG_CANDIDATE_K) -> list[dict]:
-    """Returns up to top_k results: [{text, filename, page, section, document_id}, ...]"""
+    """Returns up to top_k results: [{text, filename, page, section, document_id, ordinal}, ...].
+    ordinal is a chunk's position within its document — pass it (with
+    document_id) to get_context() to pull more of that document around a
+    result that looks worth reading further."""
     import rag_embed
     import rag_store
 
@@ -65,9 +69,36 @@ async def search(query: str, owner: str, top_k: int = RAG_TOP_K, candidate_k: in
             "page": c["page"],
             "section": c["section"],
             "document_id": str(c["document_id"]),
+            "ordinal": c["ordinal"],
         }
         for c in ordered[:top_k]
     ]
+
+
+async def get_context(
+    document_id: str, ordinal: int, owner: str, chunks_before: int = 2, chunks_after: int = 2
+) -> dict | None:
+    """Expands a single search hit (document_id + ordinal, both from a
+    search() result) into a larger contiguous passage — the chunks
+    immediately before/after it, concatenated in order. Returns None if the
+    document doesn't exist, isn't owned by `owner`, or that ordinal is out
+    of range."""
+    import rag_store
+
+    chunks_before = max(0, min(chunks_before, _CONTEXT_WINDOW_MAX))
+    chunks_after = max(0, min(chunks_after, _CONTEXT_WINDOW_MAX))
+
+    chunks = await rag_store.get_context_chunks(document_id, owner, ordinal, chunks_before, chunks_after)
+    if not chunks:
+        return None
+
+    return {
+        "filename": chunks[0]["filename"],
+        "text": "\n\n".join(c["text"] for c in chunks),
+        "start_ordinal": chunks[0]["ordinal"],
+        "end_ordinal": chunks[-1]["ordinal"],
+        "pages": sorted({c["page"] for c in chunks if c["page"] is not None}),
+    }
 
 
 async def _rerank_or_keep_order(query: str, candidates: list[dict]) -> list[dict]:

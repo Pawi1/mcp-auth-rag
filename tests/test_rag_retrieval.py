@@ -32,9 +32,9 @@ class TestReciprocalRankFusion:
         assert set(result) == {"a", "b"}
 
 
-def _chunk(cid: str, text: str = "some text", filename: str = "doc.pdf") -> dict:
+def _chunk(cid: str, text: str = "some text", filename: str = "doc.pdf", ordinal: int = 0) -> dict:
     return {"id": cid, "document_id": "11111111-1111-1111-1111-111111111111",
-            "page": 1, "section": "Intro", "text": text, "filename": filename}
+            "page": 1, "section": "Intro", "text": text, "filename": filename, "ordinal": ordinal}
 
 
 class TestSearch:
@@ -110,3 +110,47 @@ class TestSearch:
 
         results = await rag_retrieval.search("query", "alice", top_k=8, candidate_k=8)
         assert results == []
+
+    async def test_results_carry_ordinal_for_get_context(self, monkeypatch):
+        monkeypatch.setattr(rag_embed, "embed_query", AsyncMock(return_value=[0.1]))
+        monkeypatch.setattr(rag_store, "vector_search", AsyncMock(return_value=["c1"]))
+        monkeypatch.setattr(rag_store, "fts_search", AsyncMock(return_value=[]))
+        monkeypatch.setattr(rag_store, "fetch_chunks_by_id", AsyncMock(return_value={"c1": _chunk("c1", ordinal=7)}))
+        monkeypatch.setattr(rag_embed, "rerank", AsyncMock(return_value=None))
+
+        results = await rag_retrieval.search("query", "alice", top_k=8, candidate_k=8)
+        assert results[0]["ordinal"] == 7
+
+
+class TestGetContext:
+    async def test_concatenates_chunks_in_order(self, monkeypatch):
+        monkeypatch.setattr(rag_store, "get_context_chunks", AsyncMock(return_value=[
+            {"ordinal": 3, "page": 1, "section": "Intro", "text": "third", "filename": "doc.pdf"},
+            {"ordinal": 4, "page": 1, "section": "Intro", "text": "fourth", "filename": "doc.pdf"},
+            {"ordinal": 5, "page": 2, "section": "Intro", "text": "fifth", "filename": "doc.pdf"},
+        ]))
+
+        context = await rag_retrieval.get_context("doc-1", ordinal=4, owner="alice")
+
+        assert context["text"] == "third\n\nfourth\n\nfifth"
+        assert context["filename"] == "doc.pdf"
+        assert context["start_ordinal"] == 3
+        assert context["end_ordinal"] == 5
+        assert context["pages"] == [1, 2]
+
+    async def test_returns_none_when_nothing_found(self, monkeypatch):
+        monkeypatch.setattr(rag_store, "get_context_chunks", AsyncMock(return_value=[]))
+        assert await rag_retrieval.get_context("doc-1", ordinal=4, owner="alice") is None
+
+    async def test_clamps_window_size(self, monkeypatch):
+        seen = {}
+
+        async def fake_get_context_chunks(document_id, owner, center_ordinal, before, after):
+            seen["before"], seen["after"] = before, after
+            return [{"ordinal": center_ordinal, "page": 1, "section": None, "text": "x", "filename": "doc.pdf"}]
+
+        monkeypatch.setattr(rag_store, "get_context_chunks", fake_get_context_chunks)
+        await rag_retrieval.get_context("doc-1", ordinal=4, owner="alice", chunks_before=999, chunks_after=-5)
+
+        assert seen["before"] == rag_retrieval._CONTEXT_WINDOW_MAX
+        assert seen["after"] == 0

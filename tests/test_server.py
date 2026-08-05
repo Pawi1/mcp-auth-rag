@@ -133,6 +133,54 @@ class TestRagListDocuments:
         assert data["documents"][0]["processed_at"] is None
 
 
+class TestRagGetContext:
+    async def test_unauthenticated_call_is_rejected(self):
+        current_user.set(None)
+        result = await server.call_tool("rag_get_context", {"document_id": "doc-1", "ordinal": 3})
+        data = _result_json(result)
+        assert "error" in data
+
+    async def test_passes_arguments_through_to_retrieval(self, monkeypatch):
+        import rag_retrieval
+
+        get_context_mock = AsyncMock(return_value={
+            "filename": "paper.pdf", "text": "more context", "start_ordinal": 1, "end_ordinal": 5, "pages": [1],
+        })
+        monkeypatch.setattr(rag_retrieval, "get_context", get_context_mock)
+        current_user.set({"username": "alice", "teams": []})
+
+        result = await server.call_tool(
+            "rag_get_context", {"document_id": "doc-1", "ordinal": 3, "chunks_before": 1, "chunks_after": 4}
+        )
+        data = _result_json(result)
+
+        assert data["text"] == "more context"
+        get_context_mock.assert_awaited_once_with("doc-1", 3, "alice", chunks_before=1, chunks_after=4)
+
+    async def test_defaults_chunks_before_after_when_not_provided(self, monkeypatch):
+        import rag_retrieval
+
+        get_context_mock = AsyncMock(return_value={
+            "filename": "paper.pdf", "text": "x", "start_ordinal": 1, "end_ordinal": 1, "pages": [],
+        })
+        monkeypatch.setattr(rag_retrieval, "get_context", get_context_mock)
+        current_user.set({"username": "alice", "teams": []})
+
+        await server.call_tool("rag_get_context", {"document_id": "doc-1", "ordinal": 3})
+
+        get_context_mock.assert_awaited_once_with("doc-1", 3, "alice", chunks_before=2, chunks_after=2)
+
+    async def test_not_found_returns_error_payload(self, monkeypatch):
+        import rag_retrieval
+
+        monkeypatch.setattr(rag_retrieval, "get_context", AsyncMock(return_value=None))
+        current_user.set({"username": "alice", "teams": []})
+
+        result = await server.call_tool("rag_get_context", {"document_id": "doc-1", "ordinal": 3})
+        data = _result_json(result)
+        assert "error" in data
+
+
 class TestToolCallAudit:
     async def test_successful_call_is_audited(self, tmp_db):
         current_user.set({"username": "alice", "teams": ["admins"]})

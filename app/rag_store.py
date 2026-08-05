@@ -282,12 +282,31 @@ async def fetch_chunks_by_id(chunk_ids: list[str]) -> dict[str, dict]:
         return {}
     async with pg_pool().acquire() as conn:
         rows = await conn.fetch(
-            """SELECT c.id, c.document_id, c.page, c.section, c.text, d.filename
+            """SELECT c.id, c.document_id, c.ordinal, c.page, c.section, c.text, d.filename
                FROM chunks c JOIN documents d ON d.id = c.document_id
                WHERE c.id = ANY($1::uuid[])""",
             [uuid.UUID(cid) for cid in chunk_ids],
         )
         return {str(r["id"]): dict(r) for r in rows}
+
+
+async def get_context_chunks(document_id, owner: str, center_ordinal: int, before: int, after: int) -> list[dict]:
+    """Chunks [center_ordinal - before, center_ordinal + after] for a
+    document, in order — lets a caller expand one search hit into a larger
+    contiguous passage instead of just the single ~350-word chunk that
+    matched. Owner-scoped via the documents join, same as everything else
+    here — a chunk's document_id alone isn't enough to prove the caller can
+    see it."""
+    async with pg_pool().acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT c.ordinal, c.page, c.section, c.text, d.filename
+               FROM chunks c JOIN documents d ON d.id = c.document_id
+               WHERE c.document_id = $1 AND d.owner = $2
+                 AND c.ordinal BETWEEN $3 AND $4
+               ORDER BY c.ordinal""",
+            document_id, owner, max(center_ordinal - before, 0), center_ordinal + after,
+        )
+        return [dict(r) for r in rows]
 
 
 async def fts_search(query: str, owner: str, limit: int) -> list[str]:
