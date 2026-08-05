@@ -172,7 +172,16 @@ Search (panel or rag_search tool)
   `documents`/`ingest_jobs` tables) + Qdrant (vectors only, with just enough
   payload — `owner`, `document_id` — to filter). Both are separate from
   `app.db` (the auth tables) — very different scale and access pattern, no
-  reason to share a database. See `docker-compose.rag.yml`.
+  reason to share a database. See `docker-compose.rag.yml`. Full-text search
+  defaults to Postgres's `simple` config (tokenize + lowercase, no stemming)
+  rather than assuming a language — `polish` isn't a real Postgres config
+  (its built-in configs are Snowball-based, and Snowball has no Polish
+  stemmer), and running the wrong language's stemming rules over your text
+  can do more harm than no stemming at all. If your corpus really is one
+  language, set `rag.fts_language` (e.g. `"english"`) for real stemming —
+  but only *before* first ingest, since it's baked into the `chunks` table's
+  generated column at creation time (changing it later needs a manual
+  `ALTER TABLE`, not just a config edit).
 - **Retrieval** (`rag_retrieval.py`) fuses Qdrant's dense ANN search with
   Postgres full-text search by Reciprocal Rank Fusion (rank position, not raw
   score — the two live on incomparable scales), then optionally reranks the

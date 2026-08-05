@@ -92,6 +92,13 @@ RAG_RERANKER_ENABLED  = bool(_p("rag.reranker.enabled", True))
 RAG_CHUNK_TARGET_WORDS  = int(_p("rag.chunking.target_words", 350))
 RAG_CHUNK_OVERLAP_WORDS = int(_p("rag.chunking.overlap_words", 40))
 
+# Full-text search language — a Postgres regconfig name (see rag_store.py's
+# schema comment for why this defaults to 'simple' rather than assuming a
+# language). Set to 'english' etc. if your corpus is actually one language;
+# wrong-language stemming (e.g. English rules on Polish text) can do more
+# harm than 'simple''s plain no-stemming tokenization.
+RAG_FTS_LANGUAGE = _p("rag.fts_language", "simple")
+
 # OCR fallback for scanned PDF pages (no text layer) — via PyMuPDF's built-in
 # Tesseract integration, so no extra Python dependency, only the system
 # tesseract-ocr binary + language packs (see README). Best-effort: a page

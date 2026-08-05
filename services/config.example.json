@@ -39,6 +39,7 @@
       "languages": "pol+eng",
       "dpi": 200
     },
+    "fts_language": "simple",
     "retrieval": {
       "candidate_k": 25,
       "top_k": 8

@@ -12,6 +12,8 @@ suite.
 
 import uuid
 
+import pytest
+
 import rag_store
 
 
@@ -24,6 +26,28 @@ class TestNoNul:
 
     def test_passes_through_none(self):
         assert rag_store._no_nul(None) is None
+
+
+class TestFtsLanguageValidation:
+    """rag_store interpolates RAG_FTS_LANGUAGE directly into the chunks
+    table's GENERATED column DDL (Postgres requires a literal there, not a
+    bind parameter) — _FTS_LANGUAGE_RE is the guard against that ever being
+    anything but a plain regconfig-shaped name."""
+
+    @pytest.mark.parametrize("name", ["simple", "english", "german", "pl_stem"])
+    def test_accepts_plausible_regconfig_names(self, name):
+        assert rag_store._FTS_LANGUAGE_RE.fullmatch(name)
+
+    @pytest.mark.parametrize("name", [
+        "english; DROP TABLE chunks;--",
+        "english'); DROP TABLE chunks;--",
+        "",
+        "English",
+        "with space",
+        "with-dash",
+    ])
+    def test_rejects_anything_else(self, name):
+        assert not rag_store._FTS_LANGUAGE_RE.fullmatch(name)
 
 
 class TestUploadPath:

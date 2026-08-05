@@ -7,6 +7,7 @@ pattern than the auth tables, so sharing one SQLite file made no sense.
 """
 
 import logging
+import re
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -15,9 +16,20 @@ import asyncpg
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import Distance, FieldCondition, Filter, MatchValue, PointStruct, VectorParams
 
-from config import RAG_EMBEDDING_DIM, RAG_POSTGRES_DSN, RAG_QDRANT_COLLECTION, RAG_QDRANT_URL, RAG_UPLOAD_DIR
+from config import (
+    RAG_EMBEDDING_DIM, RAG_FTS_LANGUAGE, RAG_POSTGRES_DSN, RAG_QDRANT_COLLECTION, RAG_QDRANT_URL, RAG_UPLOAD_DIR,
+)
 
 logger = logging.getLogger("mcp-auth-starter")
+
+# The GENERATED column below needs this as a literal (Postgres requires an
+# immutable expression there, so it can't be a bind parameter like in
+# fts_search's query) — validate it's a plain regconfig-shaped name before
+# ever interpolating it into DDL, even though it only ever comes from our
+# own config.json, not request input.
+_FTS_LANGUAGE_RE = re.compile(r"[a-z][a-z0-9_]*")
+if not _FTS_LANGUAGE_RE.fullmatch(RAG_FTS_LANGUAGE):
+    raise ValueError(f"Invalid rag.fts_language: {RAG_FTS_LANGUAGE!r}")
 
 _pg_pool: Optional[asyncpg.Pool] = None
 _qdrant: Optional[AsyncQdrantClient] = None
@@ -74,17 +86,18 @@ async def _ensure_schema() -> None:
                 UNIQUE (owner, content_hash)
             )
         """)
-        # to_tsvector('simple', text) in a GENERATED column is the documented
-        # supported pattern (PG treats a literal regconfig argument as
-        # immutable enough). 'simple' (tokenize + lowercase, no stemming) —
-        # not 'polish', which doesn't exist: Postgres's built-in configs are
-        # Snowball-based, and Snowball has no Polish stemmer. Getting real
-        # Polish stemming means installing an ispell dictionary into the
-        # Postgres image and registering a TEXT SEARCH CONFIGURATION for it
-        # — a real upgrade, just not one this schema forces on day one.
-        # RRF fusion (rag_retrieval.py) means Qdrant's semantic search still
-        # covers for the stemming this gives up.
-        await conn.execute("""
+        # to_tsvector(RAG_FTS_LANGUAGE, text) in a GENERATED column is the
+        # documented supported pattern (PG treats a literal regconfig
+        # argument as immutable enough — can't be a bind parameter here).
+        # Defaults to 'simple' (tokenize + lowercase, no stemming) rather
+        # than assuming a language: 'polish' doesn't exist (Postgres's
+        # built-in configs are Snowball-based, and Snowball has no Polish
+        # stemmer), and applying e.g. 'english' stemming rules to Polish text
+        # would actively mangle it, not just skip stemming. Set
+        # rag.fts_language to 'english' etc. if your corpus really is one
+        # language. Either way, RRF fusion (rag_retrieval.py) means Qdrant's
+        # semantic search still covers for whatever FTS misses.
+        await conn.execute(f"""
             CREATE TABLE IF NOT EXISTS chunks (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 document_id UUID NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
@@ -93,7 +106,7 @@ async def _ensure_schema() -> None:
                 section TEXT,
                 text TEXT NOT NULL,
                 word_count INT NOT NULL,
-                tsv tsvector GENERATED ALWAYS AS (to_tsvector('simple', text)) STORED,
+                tsv tsvector GENERATED ALWAYS AS (to_tsvector('{RAG_FTS_LANGUAGE}', text)) STORED,
                 UNIQUE (document_id, ordinal)
             )
         """)
@@ -278,18 +291,19 @@ async def fetch_chunks_by_id(chunk_ids: list[str]) -> dict[str, dict]:
 
 
 async def fts_search(query: str, owner: str, limit: int) -> list[str]:
-    """Full-text search over chunk content (keyword match, no stemming — see
-    the 'simple' vs. 'polish' note on the chunks table above). Returns chunk
+    """Full-text search over chunk content — see the rag.fts_language note on
+    the chunks table above for the language/stemming tradeoff. Returns chunk
     id strings ranked best-first (rank position is all retrieval.py needs —
-    see reciprocal_rank_fusion)."""
+    see reciprocal_rank_fusion). Unlike the GENERATED column, a regular query
+    like this one can bind the regconfig as a real parameter."""
     async with pg_pool().acquire() as conn:
         rows = await conn.fetch(
             """SELECT c.id
                FROM chunks c JOIN documents d ON d.id = c.document_id
-               WHERE d.owner = $1 AND c.tsv @@ websearch_to_tsquery('simple', $2)
-               ORDER BY ts_rank(c.tsv, websearch_to_tsquery('simple', $2)) DESC
+               WHERE d.owner = $1 AND c.tsv @@ websearch_to_tsquery($4::regconfig, $2)
+               ORDER BY ts_rank(c.tsv, websearch_to_tsquery($4::regconfig, $2)) DESC
                LIMIT $3""",
-            owner, query, limit,
+            owner, query, limit, RAG_FTS_LANGUAGE,
         )
         return [str(r["id"]) for r in rows]
 
