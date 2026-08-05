@@ -33,6 +33,7 @@ SUPPORTED_FORMATS = {"pdf", "docx", "txt", "md"}
 
 _HEADING_SIZE_RATIO = 1.2   # a line's max font size vs. document body size
 _HEADING_MAX_WORDS = 15     # headings are short; longer lines are body text
+_HEADING_MIN_CHARS = 3      # rejects lone symbols (∑, ∏) that render oversized in equations
 
 # Postgres's text/varchar columns reject embedded NUL bytes outright (not a
 # UTF-8 validity issue — it's a hard Postgres limitation), and PDF text
@@ -143,9 +144,16 @@ def _ocr_page_blocks(page) -> list:
 
 
 def _looks_like_heading(text: str, size: float, body_size: float) -> bool:
+    # Math operators (∑, ∏, ∫...) and stray equation fragments often render
+    # at a larger font size than body text in scientific PDFs — without the
+    # length/alpha checks, a lone "∑" reads as a big-font, short, unpunctuated
+    # line and gets misdetected as a heading, silently mislabeling every
+    # paragraph after it (current_heading persists until the next one) until
+    # the next real or fake heading.
     return (
         size >= body_size * _HEADING_SIZE_RATIO
-        and len(text.split()) <= _HEADING_MAX_WORDS
+        and _HEADING_MIN_CHARS <= len(text) and len(text.split()) <= _HEADING_MAX_WORDS
+        and any(c.isalpha() for c in text)
         and not text.endswith((".", ",", ";", ":"))
     )
 

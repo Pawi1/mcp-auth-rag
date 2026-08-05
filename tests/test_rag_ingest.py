@@ -64,6 +64,40 @@ class TestParsePdf:
         assert pages_for_a == {1}
         assert pages_for_b == {2}
 
+    def test_oversized_symbol_between_paragraphs_does_not_become_a_heading(self):
+        # equation operators (∑, ∏...) often render oversized in scientific
+        # PDFs — a lone one must not get misdetected as a new section,
+        # which would silently mislabel every paragraph after it.
+        doc = fitz.open()
+        page = doc.new_page()
+        page.insert_text((72, 72), "Wyniki", fontsize=18)
+        page.insert_textbox(fitz.Rect(72, 100, 523, 250), "Pierwszy akapit tekstu.", fontsize=9)
+        page.insert_text((72, 270), "#", fontsize=30)  # oversized, short, non-alpha — same shape as a stray "∑"
+        page.insert_textbox(fitz.Rect(72, 320, 523, 500), "Drugi akapit po symbolu.", fontsize=9)
+        pdf_bytes = doc.tobytes()
+        doc.close()
+
+        paragraphs, _ = ri.parse_pdf(pdf_bytes)
+        assert {p.heading for p in paragraphs} == {"Wyniki"}
+
+
+class TestLooksLikeHeading:
+    def test_lone_math_symbol_at_heading_size_is_rejected(self):
+        assert ri._looks_like_heading("∑", 24, 10) is False
+        assert ri._looks_like_heading("∏", 24, 10) is False
+
+    def test_short_low_alpha_fragment_is_rejected(self):
+        assert ri._looks_like_heading("Iδ", 24, 10) is False
+
+    def test_real_headings_are_accepted(self):
+        assert ri._looks_like_heading("Wyniki", 18, 10) is True
+        assert ri._looks_like_heading("1. Introduction", 18, 10) is True
+
+    def test_single_word_heading_still_accepted(self):
+        # Abstract/Conclusion/References etc. are common single-word
+        # headings — a naive word-count-only check must not reject these.
+        assert ri._looks_like_heading("Abstract", 18, 10) is True
+
 
 class TestParseDocx:
     def _docx_bytes(self) -> bytes:
