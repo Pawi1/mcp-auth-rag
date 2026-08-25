@@ -1,11 +1,14 @@
 """
 MCP Auth Starter — MCP tool definitions and dispatch.
 
-Add your own tools here: one Tool() entry in list_tools() and a matching
-`if name == "...":` branch in call_tool(). current_user.get() is always
-populated by the time call_tool() runs — main.py's /mcp handler rejects
-the request before it gets here if the token is missing, invalid, or
-revoked.
+Add your own tools with the @tool decorator; the registry it fills is the
+only source for both list_tools() and call_tool(), so the two cannot drift
+apart, and every call is audited whatever the handler does. Handlers take
+(user, arguments) and return a dict.
+
+current_user.get() is always populated by the time a handler runs —
+main.py's /mcp handler rejects the request before it gets here if the
+token is missing, invalid, or revoked.
 
 list_tools()/call_tool() keep the plain (name, arguments) shape mcp 1.x
 used so the tool logic stays simple to unit-test; _on_list_tools/_on_call_tool
@@ -16,7 +19,7 @@ of the old @mcp_server.list_tools()/@mcp_server.call_tool() decorators.
 
 import json
 import logging
-from typing import List
+from typing import Callable, Dict, List, Tuple
 
 from mcp.server import Server
 from mcp.server.context import ServerRequestContext
@@ -50,14 +53,28 @@ def _ok(data: dict) -> List[TextContent]:
     return [TextContent(type="text", text=json.dumps(data, indent=2, ensure_ascii=False))]
 
 
+_TOOLS: Dict[str, Tuple[Tool, Callable]] = {}
+
+_EMPTY_SCHEMA = {"type": "object", "properties": {}}
+
+
+def tool(name: str, description: str, input_schema: dict = None):
+    def register(handler):
+        _TOOLS[name] = (
+            Tool(name=name, description=description, inputSchema=input_schema or _EMPTY_SCHEMA),
+            handler,
+        )
+        return handler
+    return register
+
+
+@tool("whoami", "Return the identity of the currently authenticated user.")
+async def _whoami(user: dict, arguments: dict) -> dict:
+    return {"username": user["username"], "teams": user["teams"]}
+
+
 async def list_tools() -> List[Tool]:
-    return [
-        Tool(
-            name="whoami",
-            description="Return the identity of the currently authenticated user.",
-            inputSchema={"type": "object", "properties": {}},
-        ),
-    ]
+    return [spec for spec, _ in _TOOLS.values()]
 
 
 async def call_tool(name: str, arguments: dict) -> List[TextContent]:
@@ -65,17 +82,23 @@ async def call_tool(name: str, arguments: dict) -> List[TextContent]:
     if not user:
         return _ok({"error": "Not authenticated — connect via OAuth"})
 
-    # keep this pair (log line + log_tool_call) together in every branch you
-    # add below — the log line is for tailing, log_tool_call is the durable,
-    # queryable audit trail (tool_call_log)
-    if name == "whoami":
-        logger.info(f"Tool call: {name} by {user['username']}")
-        log_tool_call(user["username"], name)
-        return _ok({"username": user["username"], "teams": user["teams"]})
+    entry = _TOOLS.get(name)
+    if entry is None:
+        logger.warning(f"Tool call rejected: unknown tool {name!r} requested by {user['username']}")
+        log_tool_call(user["username"], name, success=False, reason="unknown_tool")
+        return _ok({"error": f"Unknown tool: {name}"})
 
-    logger.warning(f"Tool call rejected: unknown tool {name!r} requested by {user['username']}")
-    log_tool_call(user["username"], name, success=False, reason="unknown_tool")
-    return _ok({"error": f"Unknown tool: {name}"})
+    logger.info(f"Tool call: {name} by {user['username']}")
+    try:
+        result = await entry[1](user, arguments)
+    except Exception:
+        # audit the outcome, not the attempt: a handler that raised did not run
+        logger.exception(f"Tool {name!r} failed for {user['username']}")
+        log_tool_call(user["username"], name, success=False, reason="error")
+        return _ok({"error": f"Tool {name} failed"})
+
+    log_tool_call(user["username"], name)
+    return _ok(result)
 
 
 async def _on_list_tools(
