@@ -10,6 +10,7 @@ manual token pasting, no bypassing OAuth. Your actual tools live in
 server.py; everything here is generic.
 """
 
+import asyncio
 import contextlib
 import logging
 import sys
@@ -24,10 +25,10 @@ from starlette.routing import Route
 
 from config import LOG_FILE, MCP_HOST, MCP_PORT, MCP_SERVER_NAME, SERVER_URL
 from oauth import (
-    _ensure_tokens_table, load_tokens_from_db, load_clients_from_db,
-    oauth_authorize, oauth_login, oauth_login_post,
+    _ensure_tokens_table, cleanup_expired_tokens, load_tokens_from_db,
+    load_clients_from_db, oauth_authorize, oauth_login, oauth_login_post,
     oauth_metadata, oauth_protected_resource, oauth_clients_register,
-    oauth_token,
+    oauth_token, sweep_expired_state,
 )
 from server import mcp_server
 from users import _ensure_db_schema
@@ -96,15 +97,34 @@ async def handle_mcp(request: Request):
     return _NullResponse()
 
 
+CLEANUP_INTERVAL = 60
+
+
+async def _cleanup_loop() -> None:
+    while True:
+        await asyncio.sleep(CLEANUP_INTERVAL)
+        try:
+            sweep_expired_state()
+            cleanup_expired_tokens()
+        except Exception:
+            logger.exception("Cleanup pass failed")
+
+
 @contextlib.asynccontextmanager
 async def lifespan(app: Starlette) -> AsyncIterator[None]:
     _ensure_db_schema()
     _ensure_tokens_table()
     load_tokens_from_db()
     load_clients_from_db()
-    async with session_manager.run():
-        logger.info("StreamableHTTP session manager running")
-        yield
+    cleanup_task = asyncio.create_task(_cleanup_loop())
+    try:
+        async with session_manager.run():
+            logger.info("StreamableHTTP session manager running")
+            yield
+    finally:
+        cleanup_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await cleanup_task
 
 
 app = Starlette(

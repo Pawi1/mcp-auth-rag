@@ -435,6 +435,43 @@ def cleanup_expired_tokens() -> int:
     return len(expired)
 
 
+def sweep_expired_state() -> int:
+    """Drop in-memory OAuth state that is no longer usable.
+
+    Each of these dicts is otherwise only pruned when its own key is looked
+    up, so flows that are started and abandoned accumulate for the lifetime
+    of the process. /oauth/authorize needs no authentication, which makes
+    oauth_pending growable by anyone who can reach the server.
+    """
+    now = time.time()
+    dropped = 0
+
+    for login_id, pending in list(oauth_pending.items()):
+        if now - pending["issued_at"] > _LOGIN_TTL:
+            oauth_pending.pop(login_id, None)
+            dropped += 1
+
+    for code, info in list(oauth_codes.items()):
+        if now - info["issued_at"] > _AUTH_CODE_TTL:
+            oauth_codes.pop(code, None)
+            dropped += 1
+
+    for ip, attempts in list(_failed_attempts.items()):
+        fresh = [t for t in attempts if now - t < _RATE_WINDOW]
+        if fresh:
+            _failed_attempts[ip] = fresh
+        else:
+            _failed_attempts.pop(ip, None)
+            dropped += 1
+
+    for client_id, entry in list(_cimd_cache.items()):
+        if entry["expires_at"] <= now:
+            _cimd_cache.pop(client_id, None)
+            dropped += 1
+
+    return dropped
+
+
 def _page(title: str, body: str) -> str:
     return f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>{title}</title>

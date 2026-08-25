@@ -41,6 +41,7 @@ from oauth import (
     oauth_tokens,
     redeem_refresh_token,
     revoke_tokens_for_user,
+    sweep_expired_state,
 )
 
 
@@ -266,6 +267,43 @@ class TestCleanupExpiredTokens:
         row = conn.execute("SELECT 1 FROM oauth_tokens WHERE token=?", (token,)).fetchone()
         conn.close()
         assert row is None
+
+
+class TestSweepExpiredState:
+    def test_drops_expired_pending_logins(self):
+        oauth_pending.clear()
+        oauth_pending["stale"] = {"issued_at": time.time() - oauth._LOGIN_TTL - 1}
+        oauth_pending["fresh"] = {"issued_at": time.time()}
+        assert sweep_expired_state() == 1
+        assert set(oauth_pending) == {"fresh"}
+
+    def test_drops_expired_auth_codes(self):
+        oauth_codes.clear()
+        oauth_codes["stale"] = {"issued_at": time.time() - oauth._AUTH_CODE_TTL - 1}
+        oauth_codes["fresh"] = {"issued_at": time.time()}
+        assert sweep_expired_state() == 1
+        assert set(oauth_codes) == {"fresh"}
+
+    def test_drops_idle_rate_limit_entries_but_keeps_recent(self):
+        _failed_attempts.clear()
+        _failed_attempts["1.1.1.1"] = [time.time() - _RATE_WINDOW - 1]
+        _failed_attempts["2.2.2.2"] = [time.time()]
+        assert sweep_expired_state() == 1
+        assert set(_failed_attempts) == {"2.2.2.2"}
+
+    def test_drops_expired_cimd_cache_entries(self):
+        oauth._cimd_cache.clear()
+        oauth._cimd_cache["stale"] = {"metadata": {}, "expires_at": time.time() - 1}
+        oauth._cimd_cache["fresh"] = {"metadata": {}, "expires_at": time.time() + 300}
+        assert sweep_expired_state() == 1
+        assert set(oauth._cimd_cache) == {"fresh"}
+
+    def test_noop_when_nothing_expired(self):
+        oauth_pending.clear()
+        oauth_codes.clear()
+        _failed_attempts.clear()
+        oauth._cimd_cache.clear()
+        assert sweep_expired_state() == 0
 
 
 class TestRateLimit:
