@@ -52,6 +52,7 @@ def _ensure_db_schema():
         success INTEGER NOT NULL DEFAULT 0,
         reason TEXT DEFAULT ''
     )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_login_log_ip_ts ON login_log(ip, ts)")
     conn.execute("""CREATE TABLE IF NOT EXISTS tool_call_log (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         ts REAL NOT NULL,
