@@ -16,6 +16,10 @@ logger = logging.getLogger("mcp-auth-starter")
 
 _ph = PasswordHasher()
 
+_ANOMALY_WINDOW = 600
+_ALERT_THRESHOLDS = (10, 25, 50)
+_alerted: dict = {}  # ip -> (highest threshold already logged, when)
+
 
 def hash_password(password: str) -> str:
     return _ph.hash(password)
@@ -103,13 +107,31 @@ def _check_login_anomaly(ip: str) -> None:
         conn = db.connect(DB_PATH)
         count = conn.execute(
             "SELECT COUNT(*) FROM login_log WHERE ip=? AND success=0 AND ts>?",
-            (ip, time.time() - 600)
+            (ip, time.time() - _ANOMALY_WINDOW)
         ).fetchone()[0]
     except Exception:
         return
 
-    if count in (10, 25, 50):
-        logger.warning(f"Possible brute-force from {ip}: {count} failed logins in the last 10 minutes")
+    # Alert on crossing a threshold, not on landing exactly on it: concurrent
+    # failures make the count jump, and an equality check silently misses those.
+    crossed = max((t for t in _ALERT_THRESHOLDS if count >= t), default=0)
+    if not crossed:
+        _alerted.pop(ip, None)
+        return
+    if crossed <= _alerted.get(ip, (0, 0.0))[0]:
+        return
+
+    _alerted[ip] = (crossed, time.time())
+    logger.warning(f"Possible brute-force from {ip}: {count} failed logins in the last 10 minutes")
+
+
+def prune_login_alerts() -> int:
+    """Drop alert state for IPs whose failure window has elapsed."""
+    cutoff = time.time() - _ANOMALY_WINDOW
+    stale = [ip for ip, (_, when) in list(_alerted.items()) if when < cutoff]
+    for ip in stale:
+        _alerted.pop(ip, None)
+    return len(stale)
 
 
 def get_user(username: str):

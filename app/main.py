@@ -31,7 +31,7 @@ from oauth import (
     oauth_token, close_http_client, get_http_client, sweep_expired_state,
 )
 from server import mcp_server
-from users import _ensure_db_schema
+from users import _ensure_db_schema, prune_login_alerts
 
 
 logging.basicConfig(
@@ -106,6 +106,7 @@ async def _cleanup_loop() -> None:
         try:
             sweep_expired_state()
             cleanup_expired_tokens()
+            prune_login_alerts()
         except Exception:
             logger.exception("Cleanup pass failed")
 
@@ -225,7 +226,7 @@ def run_setup_wizard():
         env_path.chmod(0o600)
         print(f"✓ {env_path} (SECRET_KEY pre-generated, chmod 600)")
 
-    from users import _ensure_db_schema as _schema, create_user as _cu, get_user as _gu
+    from users import _ensure_db_schema, prune_login_alerts as _schema, create_user as _cu, get_user as _gu
     _schema()
     print()
     if not _gu("admin"):
