@@ -23,6 +23,7 @@ import httpx
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
+import db
 from config import (
     SERVER_URL, DB_PATH, REFRESH_TOKEN_EXPIRE_DAYS,
     ACCESS_TOKEN_EXPIRE_MINUTES, MCP_RESOURCE_URI,
@@ -68,7 +69,8 @@ def _record_failed(ip: str) -> None:
 
 
 def _ensure_tokens_table():
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = db.connect(DB_PATH)
+    db.enable_wal(conn)
     conn.execute("""CREATE TABLE IF NOT EXISTS oauth_tokens (
         token TEXT PRIMARY KEY,
         username TEXT,
@@ -101,7 +103,7 @@ def _ensure_tokens_table():
 
 def load_clients_from_db():
     try:
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = db.connect(DB_PATH)
         rows = conn.execute(
             "SELECT client_id, client_secret, name, redirect_uris, application_type FROM oauth_clients"
         ).fetchall()
@@ -129,7 +131,7 @@ def create_oauth_client(name: str, redirect_uris: list = None, application_type:
     client_secret = secrets.token_urlsafe(32)
     now = time.time()
     uris = redirect_uris or []
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = db.connect(DB_PATH)
     conn.execute("INSERT INTO oauth_clients VALUES (?,?,?,?,?,?)",
                  (client_id, client_secret, name, json.dumps(uris), application_type, now))
     conn.commit()
@@ -311,7 +313,7 @@ def issue_token(username: str) -> str:
 
     oauth_tokens[token] = {"issued_at": now, "username": username}
     try:
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = db.connect(DB_PATH)
         conn.execute("INSERT OR REPLACE INTO oauth_tokens VALUES (?,?,?,?)",
                      (token, username, now, expires))
         conn.commit()
@@ -328,7 +330,7 @@ def issue_refresh_token(username: str, client_id: str = "") -> str:
     now = time.time()
     expires = now + 86400 * REFRESH_TOKEN_EXPIRE_DAYS
     try:
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = db.connect(DB_PATH)
         conn.execute("INSERT OR REPLACE INTO refresh_tokens VALUES (?,?,?,?,?)",
                      (token, username, client_id, now, expires))
         conn.commit()
@@ -343,7 +345,7 @@ def redeem_refresh_token(token: str, client_id: str) -> str | None:
     use, the caller mints a fresh replacement). Returns the username, or None if the
     token is unknown, expired, or was issued to a different client_id."""
     try:
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = db.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
         row = conn.execute(
             "SELECT username, client_id, expires_at FROM refresh_tokens WHERE token=?", (token,)
@@ -363,7 +365,7 @@ def redeem_refresh_token(token: str, client_id: str) -> str | None:
 
 def load_tokens_from_db():
     try:
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = db.connect(DB_PATH)
         rows = conn.execute(
             "SELECT token, username, issued_at FROM oauth_tokens WHERE expires_at > ?",
             (time.time(),)
@@ -379,7 +381,7 @@ def load_tokens_from_db():
 def is_token_active(token: str) -> bool:
     """Check if token exists in DB and is not expired (cross-process revocation check)."""
     try:
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = db.connect(DB_PATH)
         row = conn.execute(
             "SELECT 1 FROM oauth_tokens WHERE token=? AND expires_at > ?",
             (token, time.time())
@@ -396,7 +398,7 @@ def revoke_tokens_for_user(username: str) -> int:
     for t in revoked:
         oauth_tokens.pop(t, None)
     try:
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = db.connect(DB_PATH)
         conn.execute("DELETE FROM oauth_tokens WHERE username=?", (username,))
         conn.commit()
         conn.close()
@@ -415,7 +417,7 @@ def cleanup_expired_tokens() -> int:
     for t in expired:
         oauth_tokens.pop(t, None)
     try:
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = db.connect(DB_PATH)
         conn.execute("DELETE FROM oauth_tokens WHERE expires_at < ?", (now,))
         conn.execute("DELETE FROM refresh_tokens WHERE expires_at < ?", (now,))
         conn.commit()

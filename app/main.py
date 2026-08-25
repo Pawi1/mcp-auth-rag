@@ -233,9 +233,9 @@ def run_adduser():
         if input(f"User '{username}' exists. Reset password? [y/N]: ").strip().lower() != "y":
             print("Aborted.")
             return
-        import sqlite3
+        import db
         pw = _getpass_stars("New password: ")
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = db.connect(DB_PATH)
         conn.execute("UPDATE users SET password_hash=? WHERE username=?", (hash_password(pw), username))
         conn.commit()
         conn.close()

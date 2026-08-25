@@ -9,6 +9,7 @@ import time
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError, VerificationError, InvalidHashError
 
+import db
 from config import DB_PATH
 
 logger = logging.getLogger("mcp-auth-starter")
@@ -23,7 +24,7 @@ def hash_password(password: str) -> str:
 def _upgrade_password(username: str, password: str) -> None:
     new_hash = hash_password(password)
     try:
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = db.connect(DB_PATH)
         conn.execute("UPDATE users SET password_hash = ? WHERE username = ?", (new_hash, username))
         conn.commit()
         conn.close()
@@ -33,7 +34,8 @@ def _upgrade_password(username: str, password: str) -> None:
 
 
 def _ensure_db_schema():
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = db.connect(DB_PATH)
+    db.enable_wal(conn)
     conn.execute("""CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         username TEXT UNIQUE NOT NULL,
@@ -64,7 +66,7 @@ def _ensure_db_schema():
 
 def log_login_attempt(username: str, ip: str, success: bool, reason: str = "") -> None:
     try:
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = db.connect(DB_PATH)
         conn.execute(
             "INSERT INTO login_log (ts, username, ip, success, reason) VALUES (?,?,?,?,?)",
             (time.time(), username, ip, int(success), reason)
@@ -83,7 +85,7 @@ def log_tool_call(username: str, tool_name: str, success: bool = True, reason: s
     allowed — so 'who ran delete_customer, and when' is a query against
     tool_call_log, not a grep through log files after the fact."""
     try:
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = db.connect(DB_PATH)
         conn.execute(
             "INSERT INTO tool_call_log (ts, username, tool_name, success, reason) VALUES (?,?,?,?,?)",
             (time.time(), username, tool_name, int(success), reason)
@@ -101,7 +103,7 @@ def _check_login_anomaly(ip: str) -> None:
     just makes the signal visible in the log by default.
     """
     try:
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = db.connect(DB_PATH)
         count = conn.execute(
             "SELECT COUNT(*) FROM login_log WHERE ip=? AND success=0 AND ts>?",
             (ip, time.time() - 600)
@@ -115,7 +117,7 @@ def _check_login_anomaly(ip: str) -> None:
 
 
 def get_user(username: str):
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = db.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     row = conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
     conn.close()
@@ -124,7 +126,7 @@ def get_user(username: str):
 
 def create_user(username: str, password: str, email: str = "") -> bool:
     try:
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = db.connect(DB_PATH)
         conn.execute(
             "INSERT INTO users (username, password_hash, email) VALUES (?, ?, ?)",
             (username, hash_password(password), email or None)
