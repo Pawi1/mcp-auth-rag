@@ -28,7 +28,7 @@ from oauth import (
     _ensure_tokens_table, cleanup_expired_tokens, load_tokens_from_db,
     load_clients_from_db, oauth_authorize, oauth_login, oauth_login_post,
     oauth_metadata, oauth_protected_resource, oauth_clients_register,
-    oauth_token, sweep_expired_state,
+    oauth_token, close_http_client, get_http_client, sweep_expired_state,
 )
 from server import mcp_server
 from users import _ensure_db_schema
@@ -116,6 +116,7 @@ async def lifespan(app: Starlette) -> AsyncIterator[None]:
     _ensure_tokens_table()
     load_tokens_from_db()
     load_clients_from_db()
+    get_http_client()
     cleanup_task = asyncio.create_task(_cleanup_loop())
     try:
         async with session_manager.run():
@@ -125,6 +126,7 @@ async def lifespan(app: Starlette) -> AsyncIterator[None]:
         cleanup_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await cleanup_task
+        await close_http_client()
 
 
 app = Starlette(

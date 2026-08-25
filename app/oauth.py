@@ -235,8 +235,7 @@ async def _fetch_cimd_metadata(client_id: str) -> dict | None:
         return None
 
     try:
-        async with httpx.AsyncClient(follow_redirects=False, timeout=_CIMD_FETCH_TIMEOUT) as http:
-            resp = await http.get(client_id)
+        resp = await get_http_client().get(client_id)
     except httpx.HTTPError as e:
         logger.warning(f"CIMD fetch failed for {client_id!r}: {e}")
         return None
@@ -271,6 +270,29 @@ async def _fetch_cimd_metadata(client_id: str) -> dict | None:
     ttl = min(int(max_age_match.group(1)), _CIMD_CACHE_TTL_MAX) if max_age_match else _CIMD_CACHE_TTL_DEFAULT
     _cimd_cache[client_id] = {"metadata": metadata, "expires_at": time.time() + ttl}
     return metadata
+
+
+_http_client: httpx.AsyncClient | None = None
+
+
+def get_http_client() -> httpx.AsyncClient:
+    """One shared client for CIMD fetches.
+
+    httpx builds an SSL context per client, and loading the system CA bundle
+    costs ~5ms of blocking CPU. Constructing one per fetch spent that on the
+    event loop every time a document was not already cached.
+    """
+    global _http_client
+    if _http_client is None:
+        _http_client = httpx.AsyncClient(follow_redirects=False, timeout=_CIMD_FETCH_TIMEOUT)
+    return _http_client
+
+
+async def close_http_client() -> None:
+    global _http_client
+    if _http_client is not None:
+        await _http_client.aclose()
+        _http_client = None
 
 
 def _pkce_challenge_from_verifier(code_verifier: str) -> str:

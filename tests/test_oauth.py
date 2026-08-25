@@ -588,29 +588,23 @@ class _FakeCimdResponse:
 
 
 class _FakeAsyncClient:
-    """Stands in for httpx.AsyncClient so CIMD fetch tests don't touch the network."""
-    def __init__(self, response=None, exc=None, **_kwargs):
+    """Stands in for the shared httpx.AsyncClient so CIMD fetch tests don't touch the network."""
+    def __init__(self, response=None, exc=None, track_calls=None):
         self._response = response
         self._exc = exc
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *_a):
-        return False
+        self._track_calls = track_calls
 
     async def get(self, _url):
+        if self._track_calls is not None:
+            self._track_calls.append(1)
         if self._exc:
             raise self._exc
         return self._response
 
 
 def _patch_cimd_fetch(monkeypatch, response=None, exc=None, track_calls=None):
-    def factory(*_a, **_k):
-        if track_calls is not None:
-            track_calls.append(1)
-        return _FakeAsyncClient(response=response, exc=exc)
-    monkeypatch.setattr(oauth.httpx, "AsyncClient", factory)
+    client = _FakeAsyncClient(response=response, exc=exc, track_calls=track_calls)
+    monkeypatch.setattr(oauth, "get_http_client", lambda: client)
 
 
 class TestIsCimdClientId:
