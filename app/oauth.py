@@ -27,7 +27,7 @@ from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Re
 import db
 from config import (
     SERVER_URL, DB_PATH, REFRESH_TOKEN_EXPIRE_DAYS,
-    ACCESS_TOKEN_EXPIRE_MINUTES, MCP_RESOURCE_URI,
+    ACCESS_TOKEN_EXPIRE_MINUTES, MCP_RESOURCE_URI, MCP_SCOPE,
 )
 from users import verify_user
 
@@ -510,10 +510,12 @@ def _page(title: str, body: str) -> str:
 # ============================================================================
 
 async def oauth_protected_resource(request: Request) -> JSONResponse:
-    """RFC 8707 — tells clients where the authorization server is"""
+    """RFC 9728 — tells clients where the authorization server is, and which
+    scopes to request when the WWW-Authenticate challenge carries none."""
     return JSONResponse({
         "resource": MCP_RESOURCE_URI,
         "authorization_servers": [SERVER_URL],
+        "scopes_supported": [MCP_SCOPE],
     })
 
 
@@ -527,7 +529,7 @@ async def oauth_metadata(request: Request) -> JSONResponse:
         "grant_types_supported": ["authorization_code", "refresh_token"],
         "code_challenge_methods_supported": ["S256"],
         "token_endpoint_auth_methods_supported": ["client_secret_post", "client_secret_basic", "none"],
-        "scopes_supported": ["mcp"],
+        "scopes_supported": [MCP_SCOPE],
         "client_id_metadata_document_supported": True,
         "authorization_response_iss_parameter_supported": True,
     })
@@ -569,7 +571,7 @@ async def oauth_clients_register(request: Request) -> JSONResponse:
         "grant_types": ["authorization_code", "refresh_token"],
         "response_types": ["code"],
         "token_endpoint_auth_method": "client_secret_post",
-        "scope": "mcp",
+        "scope": MCP_SCOPE,
     }, status_code=201)
 
 
@@ -827,7 +829,7 @@ async def oauth_token(request: Request) -> JSONResponse:
             "refresh_token": issue_refresh_token(username, client_id),
             "token_type": "bearer",
             "expires_in": int(60 * ACCESS_TOKEN_EXPIRE_MINUTES),
-            "scope": "mcp",
+            "scope": MCP_SCOPE,
         })
 
     # peek, don't consume yet — a wrong client_secret or code_verifier
@@ -885,5 +887,5 @@ async def oauth_token(request: Request) -> JSONResponse:
         "refresh_token": refresh_token_out,
         "token_type": "bearer",
         "expires_in": int(60 * ACCESS_TOKEN_EXPIRE_MINUTES),
-        "scope": "mcp",
+        "scope": MCP_SCOPE,
     })

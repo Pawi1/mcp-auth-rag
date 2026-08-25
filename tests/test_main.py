@@ -61,6 +61,12 @@ class TestHandleMcpAuth:
         assert resp.status_code == 401
         assert "Bearer" in resp.headers["www-authenticate"]
 
+    def test_challenge_advertises_scope(self, client):
+        """MCP 2026-07-28: the challenge SHOULD carry the scope the client needs,
+        so it can request the right one before starting the flow."""
+        resp = client.post("/mcp")
+        assert 'scope="mcp"' in resp.headers["www-authenticate"]
+
     def test_non_bearer_scheme_401(self, client):
         """Slicing off a fixed 7 chars turned "Basic dXNlcjpwYXNz" into a
         mangled token and reported it as invalid rather than unauthenticated."""

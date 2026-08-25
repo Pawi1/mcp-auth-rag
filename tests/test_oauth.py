@@ -88,6 +88,7 @@ def test_client():
         Route("/oauth/authorize",          endpoint=oauth.oauth_authorize,          methods=["GET"]),
         Route("/oauth/clients/register",   endpoint=oauth.oauth_clients_register,   methods=["POST"]),
         Route("/.well-known/oauth-authorization-server", endpoint=oauth.oauth_metadata, methods=["GET"]),
+        Route("/.well-known/oauth-protected-resource", endpoint=oauth.oauth_protected_resource, methods=["GET"]),
     ])
     return TestClient(app, raise_server_exceptions=True, follow_redirects=False)
 
@@ -547,6 +548,19 @@ class TestOauthClientsRegister:
             },
         )
         assert r.status_code == 201
+
+
+class TestProtectedResourceMetadata:
+    def test_advertises_resource_and_authorization_server(self, test_client):
+        body = test_client.get("/.well-known/oauth-protected-resource").json()
+        assert body["resource"].endswith("/mcp")
+        assert body["authorization_servers"]
+
+    def test_advertises_scopes_supported(self, test_client):
+        """Fallback for clients when the WWW-Authenticate challenge carries no
+        scope (RFC 9728)."""
+        body = test_client.get("/.well-known/oauth-protected-resource").json()
+        assert body["scopes_supported"] == ["mcp"]
 
 
 class TestOauthMetadata:

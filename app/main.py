@@ -23,7 +23,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
-from config import LOG_FILE, MCP_HOST, MCP_PORT, MCP_SERVER_NAME, SERVER_URL
+from config import LOG_FILE, MCP_HOST, MCP_PORT, MCP_SCOPE, MCP_SERVER_NAME, SERVER_URL
 from oauth import (
     _ensure_tokens_table, cleanup_expired_tokens, load_tokens_from_db,
     load_clients_from_db, oauth_authorize, oauth_login, oauth_login_post,
@@ -75,7 +75,8 @@ async def handle_mcp(request: Request):
         return Response(status_code=401, headers={
             "WWW-Authenticate": (
                 f'Bearer realm="{SERVER_URL}/mcp",'
-                f' resource_metadata="{SERVER_URL}/.well-known/oauth-protected-resource"'
+                f' resource_metadata="{SERVER_URL}/.well-known/oauth-protected-resource",'
+                f' scope="{MCP_SCOPE}"'
             )
         })
 

@@ -62,6 +62,11 @@ ACCESS_TOKEN_EXPIRE_MINUTES = int(_p("auth.access_token_expire_minutes", 60))
 # resource server even if it shared the same signing key.
 MCP_RESOURCE_URI = f"{SERVER_URL.rstrip('/')}/mcp"
 
+# The single scope this server issues. Advertised in protected-resource
+# metadata and in the WWW-Authenticate challenge so a client knows what to ask
+# for before it starts the flow.
+MCP_SCOPE = "mcp"
+
 # Setup state — used by startup checks to detect missing config
 CONFIG_PATH  = _cfg_path
 CONFIG_FOUND = _cfg_path.exists()
