@@ -4,7 +4,8 @@
 > `on_list_tools`/`on_call_tool` handlers instead of the old
 > `@server.list_tools()`/`@server.call_tool()` decorators). If you need the
 > mcp 1.x-pinned version, check out the
-> [`legacy`](https://github.com/Pawi1/mcp-auth-starter/tree/legacy) branch.
+> [`legacy`](https://github.com/Pawi1/mcp-auth-starter/tree/legacy) branch,
+> which is supported until **2026-09-01**.
 > Migrating your own fork? See [MIGRATING.md](MIGRATING.md).
 
 [![Tests](https://github.com/Pawi1/mcp-auth-starter/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/Pawi1/mcp-auth-starter/actions/workflows/tests.yml)

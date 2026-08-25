@@ -5,9 +5,26 @@ low-level `Server` API: the `@server.list_tools()` / `@server.call_tool()`
 decorators are gone. If you forked this repo (or copied `app/server.py`
 into your own project) before this change, here's what to update.
 
-If you're not ready to migrate yet, the [`legacy`](https://github.com/Pawi1/mcp-auth-starter/tree/legacy)
-branch stays pinned to mcp 1.x indefinitely (v1.x still gets security/bug-fix
-patches upstream), so you can keep building on it.
+> **`legacy` is supported until 2026-09-01.** The branch stays available after
+> that date but stops receiving patches, so migrate before then rather than
+> starting new work on it.
+
+Until then, the [`legacy`](https://github.com/Pawi1/mcp-auth-starter/tree/legacy)
+branch stays pinned to mcp 1.x and carries the same fixes as `main` wherever
+they apply.
+
+## Protocol versions
+
+`main` serves the MCP **2026-07-28** protocol, whose stateless core retires
+the `initialize` handshake and the `Mcp-Session-Id` header; a request instead
+describes itself through `_meta` plus the `MCP-Protocol-Version`, `mcp-method`
+and `mcp-name` headers. This needed no change here: the mcp 2.x SDK serves
+that transport alongside the older session-based one, and `main.py`'s bearer
+token check runs ahead of both, so authorization behaves the same either way.
+
+`legacy` tops out at protocol **2025-11-25** — mcp 1.x does not implement
+2026-07-28. A client that only speaks the newer protocol cannot talk to a
+server built on that branch.
 
 ## What changed
 
