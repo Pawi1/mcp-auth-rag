@@ -19,6 +19,7 @@ import sqlite3
 import time
 import urllib.parse
 
+import anyio
 import httpx
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -43,6 +44,11 @@ _RATE_WINDOW = 60            # seconds
 _AUTH_CODE_TTL = 60          # seconds an authorization code stays redeemable
 _LOGIN_TTL = 600             # seconds a pending login transaction (login_id) stays valid
 _LOGIN_CSRF_COOKIE = "login_csrf"
+
+# argon2 costs ~64ms and 64MiB per hash, so cap how many run at once: the
+# default anyio limiter (40) would allow 2.5GiB of concurrent hashing.
+_MAX_CONCURRENT_HASHES = 8
+_hash_limiter = anyio.CapacityLimiter(_MAX_CONCURRENT_HASHES)
 
 _CIMD_FETCH_TIMEOUT = 5.0     # seconds to wait for a client's metadata document
 _CIMD_MAX_BYTES = 8 * 1024    # the CIMD draft (§6) recommends ~5 KiB; a little headroom for optional fields
@@ -682,7 +688,7 @@ async def oauth_login_post(request: Request) -> Response:
             status_code=303,
         )
 
-    ok, _ = verify_user(username, password)
+    ok, _ = await anyio.to_thread.run_sync(verify_user, username, password, limiter=_hash_limiter)
     if not ok:
         _record_failed(ip)
         log_login_attempt(username, ip, success=False, reason="bad_password")
