@@ -67,10 +67,11 @@ async def handle_mcp(request: Request):
     from context import current_user
     from oauth import is_token_active
 
-    raw_token = request.headers.get("Authorization", "")[7:]
+    scheme, _, raw_token = request.headers.get("Authorization", "").partition(" ")
+    raw_token = raw_token.strip()
 
-    if not raw_token:
-        logger.info(f"MCP {request.method} 401 (no token) from {request.client}")
+    if scheme.lower() != "bearer" or not raw_token:
+        logger.info(f"MCP {request.method} 401 (no bearer token) from {request.client}")
         return Response(status_code=401, headers={
             "WWW-Authenticate": (
                 f'Bearer realm="{SERVER_URL}/mcp",'

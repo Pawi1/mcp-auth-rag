@@ -60,6 +60,17 @@ class TestHandleMcpAuth:
         assert resp.status_code == 401
         assert "Bearer" in resp.headers["www-authenticate"]
 
+    def test_non_bearer_scheme_401(self, client):
+        """Slicing off a fixed 7 chars turned "Basic dXNlcjpwYXNz" into a
+        mangled token and reported it as invalid rather than unauthenticated."""
+        resp = client.post("/mcp", headers={"Authorization": "Basic dXNlcjpwYXNz"})
+        assert resp.status_code == 401
+        assert "resource_metadata" in resp.headers.get("WWW-Authenticate", "")
+
+    def test_bearer_without_token_401(self, client):
+        resp = client.post("/mcp", headers={"Authorization": "Bearer"})
+        assert resp.status_code == 401
+
     def test_invalid_signature_401(self, client):
         bad = jose_jwt.encode(
             {"sub": "alice", "teams": [], "exp": int(time.time()) + 3600},
