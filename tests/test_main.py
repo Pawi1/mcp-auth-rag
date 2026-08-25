@@ -18,7 +18,8 @@ ALGORITHM = config.ALGORITHM
 
 def _make_token(username="alice", teams=None, exp_delta=86400):
     return pyjwt.encode(
-        {"sub": username, "teams": teams if teams is not None else ["admins"], "exp": int(time.time()) + exp_delta},
+        {"sub": username, "teams": teams if teams is not None else ["admins"],
+         "aud": config.MCP_RESOURCE_URI, "exp": int(time.time()) + exp_delta},
         SECRET_KEY, algorithm=ALGORITHM,
     )
 

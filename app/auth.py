@@ -13,21 +13,6 @@ from config import SECRET_KEY, ALGORITHM, MCP_RESOURCE_URI
 logger = logging.getLogger("mcp-auth-starter")
 
 
-def _audience_ok(payload: dict) -> bool:
-    """RFC 8707. A token carrying "aud" must name this server; one without the
-    claim predates audience binding and is left unchecked rather than rejected.
-
-    Checked here rather than by passing audience= to jwt.decode, because PyJWT
-    rejects a missing "aud" outright once an audience is supplied.
-    """
-    aud = payload.get("aud")
-    if aud is None:
-        return True
-    if isinstance(aud, str):
-        return aud == MCP_RESOURCE_URI
-    return MCP_RESOURCE_URI in aud
-
-
 async def verify_token(token: str) -> Dict:
     """
     Verify a JWT access token and extract the user's identity.
@@ -43,11 +28,11 @@ async def verify_token(token: str) -> Dict:
     Raises: ValueError if token invalid
     """
     try:
+        # RFC 8707 / MCP 2026-07-28: the server MUST only accept tokens issued
+        # for it as the audience. Required, not optional — a token omitting
+        # "aud" would otherwise be accepted from any issuer sharing this key.
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM],
-                             options={"verify_aud": False})
-        if not _audience_ok(payload):
-            logger.warning("Token audience does not name this server")
-            raise ValueError("Invalid token: audience mismatch")
+                             audience=MCP_RESOURCE_URI)
 
         username = payload.get("sub")
         teams = payload.get("teams", [])
