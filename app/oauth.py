@@ -104,7 +104,6 @@ def _ensure_tokens_table():
         expires_at REAL
     )""")
     conn.commit()
-    conn.close()
 
 
 def load_clients_from_db():
@@ -113,7 +112,6 @@ def load_clients_from_db():
         rows = conn.execute(
             "SELECT client_id, client_secret, name, redirect_uris, application_type FROM oauth_clients"
         ).fetchall()
-        conn.close()
         for client_id, client_secret, name, redirect_uris, application_type in rows:
             oauth_clients[client_id] = {
                 "client_secret": client_secret,
@@ -141,7 +139,6 @@ def create_oauth_client(name: str, redirect_uris: list = None, application_type:
     conn.execute("INSERT INTO oauth_clients VALUES (?,?,?,?,?,?)",
                  (client_id, client_secret, name, json.dumps(uris), application_type, now))
     conn.commit()
-    conn.close()
     oauth_clients[client_id] = {
         "client_secret": client_secret, "name": name, "redirect_uris": uris,
         "application_type": application_type,
@@ -345,7 +342,6 @@ def issue_token(username: str) -> str:
         conn.execute("INSERT OR REPLACE INTO oauth_tokens VALUES (?,?,?,?)",
                      (token, username, now, expires))
         conn.commit()
-        conn.close()
     except Exception as e:
         logger.warning(f"Token DB save failed: {e}")
     logger.info("Token issued")
@@ -362,7 +358,6 @@ def issue_refresh_token(username: str, client_id: str = "") -> str:
         conn.execute("INSERT OR REPLACE INTO refresh_tokens VALUES (?,?,?,?,?)",
                      (token, username, client_id, now, expires))
         conn.commit()
-        conn.close()
     except Exception as e:
         logger.warning(f"Refresh token DB save failed: {e}")
     return token
@@ -379,12 +374,10 @@ def redeem_refresh_token(token: str, client_id: str) -> str | None:
             "SELECT username, client_id, expires_at FROM refresh_tokens WHERE token=?", (token,)
         ).fetchone()
         if not row or row["expires_at"] < time.time() or row["client_id"] != client_id:
-            conn.close()
             return None
         username = row["username"]
         conn.execute("DELETE FROM refresh_tokens WHERE token=?", (token,))
         conn.commit()
-        conn.close()
         return username
     except Exception as e:
         logger.warning(f"Refresh token validation error: {e}")
@@ -398,7 +391,6 @@ def load_tokens_from_db():
             "SELECT token, username, issued_at FROM oauth_tokens WHERE expires_at > ?",
             (time.time(),)
         ).fetchall()
-        conn.close()
         for token, username, issued_at in rows:
             oauth_tokens[token] = {"issued_at": issued_at, "username": username}
         logger.info(f"Loaded {len(rows)} token(s) from DB")
@@ -414,7 +406,6 @@ def is_token_active(token: str) -> bool:
             "SELECT 1 FROM oauth_tokens WHERE token=? AND expires_at > ?",
             (token, time.time())
         ).fetchone()
-        conn.close()
         return row is not None
     except Exception:
         return False  # fail closed on DB error — revoked tokens stay revoked
@@ -429,7 +420,6 @@ def revoke_tokens_for_user(username: str) -> int:
         conn = db.connect(DB_PATH)
         conn.execute("DELETE FROM oauth_tokens WHERE username=?", (username,))
         conn.commit()
-        conn.close()
     except Exception as e:
         logger.warning(f"Token revocation DB error for '{username}': {e}")
     if revoked:
@@ -449,7 +439,6 @@ def cleanup_expired_tokens() -> int:
         conn.execute("DELETE FROM oauth_tokens WHERE expires_at < ?", (now,))
         conn.execute("DELETE FROM refresh_tokens WHERE expires_at < ?", (now,))
         conn.commit()
-        conn.close()
     except Exception as e:
         logger.warning(f"Token cleanup DB error: {e}")
     if expired:

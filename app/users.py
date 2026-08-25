@@ -27,7 +27,6 @@ def _upgrade_password(username: str, password: str) -> None:
         conn = db.connect(DB_PATH)
         conn.execute("UPDATE users SET password_hash = ? WHERE username = ?", (new_hash, username))
         conn.commit()
-        conn.close()
         logger.info(f"Password hash upgraded for user: {username}")
     except Exception as e:
         logger.warning(f"Password upgrade failed for {username}: {e}")
@@ -62,7 +61,6 @@ def _ensure_db_schema():
         reason TEXT DEFAULT ''
     )""")
     conn.commit()
-    conn.close()
 
 
 def log_login_attempt(username: str, ip: str, success: bool, reason: str = "") -> None:
@@ -73,7 +71,6 @@ def log_login_attempt(username: str, ip: str, success: bool, reason: str = "") -
             (time.time(), username, ip, int(success), reason)
         )
         conn.commit()
-        conn.close()
     except Exception as e:
         logger.warning(f"login_log write failed: {e}")
 
@@ -92,7 +89,6 @@ def log_tool_call(username: str, tool_name: str, success: bool = True, reason: s
             (time.time(), username, tool_name, int(success), reason)
         )
         conn.commit()
-        conn.close()
     except Exception as e:
         logger.warning(f"tool_call_log write failed: {e}")
 
@@ -109,7 +105,6 @@ def _check_login_anomaly(ip: str) -> None:
             "SELECT COUNT(*) FROM login_log WHERE ip=? AND success=0 AND ts>?",
             (ip, time.time() - 600)
         ).fetchone()[0]
-        conn.close()
     except Exception:
         return
 
@@ -121,7 +116,6 @@ def get_user(username: str):
     conn = db.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     row = conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
-    conn.close()
     return dict(row) if row else None
 
 
@@ -133,7 +127,6 @@ def create_user(username: str, password: str, email: str = "") -> bool:
             (username, hash_password(password), email or None)
         )
         conn.commit()
-        conn.close()
         return True
     except sqlite3.IntegrityError:
         return False

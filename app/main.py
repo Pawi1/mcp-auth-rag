@@ -260,7 +260,6 @@ def run_adduser():
         conn = db.connect(DB_PATH)
         conn.execute("UPDATE users SET password_hash=? WHERE username=?", (hash_password(pw), username))
         conn.commit()
-        conn.close()
         print(f"✓ Password updated for '{username}'")
     else:
         pw, pw2 = _getpass_stars("Password: "), _getpass_stars("Confirm: ")
