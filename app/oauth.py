@@ -230,7 +230,7 @@ async def _fetch_cimd_metadata(client_id: str) -> dict | None:
         return cached["metadata"]
 
     host = urllib.parse.urlsplit(client_id).hostname or ""
-    if not _host_is_public(host):
+    if not await anyio.to_thread.run_sync(_host_is_public, host):
         logger.warning(f"CIMD fetch blocked: {host!r} does not resolve to a public address")
         return None
 
