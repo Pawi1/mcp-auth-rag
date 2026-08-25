@@ -322,7 +322,7 @@ def _parse_basic_auth(header: str) -> tuple:
 def issue_token(username: str) -> str:
     """Issue a short-lived JWT access token (so verify_token can validate it from
     Authorization header). Audience-bound to MCP_RESOURCE_URI — see auth.verify_token."""
-    from jose import jwt as jose_jwt
+    import jwt as pyjwt
     from config import SECRET_KEY, ALGORITHM
     from users import get_user
 
@@ -331,7 +331,7 @@ def issue_token(username: str) -> str:
 
     now = time.time()
     expires = now + 60 * ACCESS_TOKEN_EXPIRE_MINUTES
-    token = jose_jwt.encode(
+    token = pyjwt.encode(
         {"sub": username, "teams": teams, "aud": MCP_RESOURCE_URI, "exp": int(expires)},
         SECRET_KEY, algorithm=ALGORITHM,
     )

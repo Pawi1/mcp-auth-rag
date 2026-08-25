@@ -2,8 +2,8 @@ import base64
 import json
 import time
 
+import jwt
 import pytest
-from jose import jwt
 
 from auth import verify_token
 from config import SECRET_KEY, ALGORITHM, MCP_RESOURCE_URI
@@ -98,6 +98,16 @@ class TestVerifyTokenAudience:
         token = _make_token(aud=MCP_RESOURCE_URI)
         user = await verify_token(token)
         assert user["username"] == "testuser"
+
+    async def test_token_with_aud_list_containing_this_server_is_accepted(self):
+        token = _make_token(aud=[MCP_RESOURCE_URI, "https://other.example/mcp"])
+        user = await verify_token(token)
+        assert user["username"] == "testuser"
+
+    async def test_token_with_aud_list_excluding_this_server_is_rejected(self):
+        token = _make_token(aud=["https://a.example/mcp", "https://b.example/mcp"])
+        with pytest.raises(ValueError):
+            await verify_token(token)
 
     async def test_token_with_mismatched_aud_is_rejected(self):
         token = _make_token(aud="https://someone-elses-mcp-server.example/mcp")

@@ -5,7 +5,7 @@ import time
 from unittest.mock import patch
 
 import pytest
-from jose import jwt as jose_jwt
+import jwt as pyjwt
 from starlette.testclient import TestClient
 
 import config
@@ -17,7 +17,7 @@ ALGORITHM = config.ALGORITHM
 
 
 def _make_token(username="alice", teams=None, exp_delta=86400):
-    return jose_jwt.encode(
+    return pyjwt.encode(
         {"sub": username, "teams": teams if teams is not None else ["admins"], "exp": int(time.time()) + exp_delta},
         SECRET_KEY, algorithm=ALGORITHM,
     )
@@ -72,7 +72,7 @@ class TestHandleMcpAuth:
         assert resp.status_code == 401
 
     def test_invalid_signature_401(self, client):
-        bad = jose_jwt.encode(
+        bad = pyjwt.encode(
             {"sub": "alice", "teams": [], "exp": int(time.time()) + 3600},
             "wrong-secret", algorithm=ALGORITHM,
         )
