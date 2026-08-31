@@ -57,6 +57,15 @@ rotate on every use (OAuth 2.1 §4.3.1) — each one is single-use, and using
 one issues a fresh replacement while invalidating the old one, so a copied
 refresh token is only useful until its legitimate owner's next refresh.
 
+How the client authenticates on that exchange depends on what kind of client
+it is. One registered through DCR presents the `client_secret` it was issued.
+A public CIMD client has no secret to present — its `client_id` is a URL
+anyone can fetch — so what authenticates it is the refresh token's own
+binding to that `client_id`: a token is redeemable only by the client it was
+issued to, and rotation above is what limits a stolen one. Requiring a secret
+from a public client instead would let it connect and then fail every refresh
+from that point on.
+
 The access token also carries an `aud` claim set to this server's canonical
 URI, and `/oauth/authorize`/`/oauth/token` validate an optional `resource`
 parameter (RFC 8707) against it — so a token minted here can't be replayed

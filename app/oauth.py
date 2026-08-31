@@ -807,13 +807,28 @@ async def oauth_token(request: Request) -> JSONResponse:
                 {"error": "invalid_request", "error_description": "Missing refresh_token"},
                 status_code=400,
             )
-        client = oauth_clients.get(client_id)
-        if not client or not secrets.compare_digest(client_secret, client["client_secret"]):
-            logger.warning("OAuth refresh rejected: client authentication failed")
-            return JSONResponse(
-                {"error": "invalid_client", "error_description": "Client authentication failed"},
-                status_code=401,
-            )
+        # A CIMD client is public — its client_id is a URL anyone can read and
+        # there is no shared secret to present, so it is never in oauth_clients
+        # (only DCR registration puts anything there). Demanding one here made
+        # every such client authenticate once and then fail every refresh from
+        # then on: the authorization_code branch below already has this same
+        # exemption, so the initial connection succeeded and only died an
+        # access-token lifetime later, looking like a random disconnect.
+        #
+        # What replaces the secret is redeem_refresh_token()'s own client_id
+        # binding, checked immediately below — a refresh token is redeemable
+        # only by the client it was issued to. For a public client that does
+        # leave the token itself bearer-usable by anyone who has stolen it,
+        # which is inherent to public clients (RFC 6749 §10.4); the rotation
+        # this branch already does is that RFC's own answer to it.
+        if not _is_cimd_client_id(client_id):
+            client = oauth_clients.get(client_id)
+            if not client or not secrets.compare_digest(client_secret, client["client_secret"]):
+                logger.warning("OAuth refresh rejected: client authentication failed")
+                return JSONResponse(
+                    {"error": "invalid_client", "error_description": "Client authentication failed"},
+                    status_code=401,
+                )
         # one-time use (OAuth 2.1 §4.3.1 rotation) — a reused/expired/unknown
         # refresh_token, or one issued to a different client, all come back None
         username = redeem_refresh_token(refresh_token_in, client_id)
