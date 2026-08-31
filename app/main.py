@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-MCP Auth Starter — Streamable HTTP Transport + OAuth 2.0 (Dynamic Client
+MCP Auth Starter - Streamable HTTP Transport + OAuth 2.0 (Dynamic Client
 Registration) + JWT bearer tokens.
 
 This is the whole point of the repo: a minimal, working example of the auth
 and transport plumbing an MCP server needs to be added as a Claude.ai (or
-any OAuth-aware MCP client) connector with a normal browser login — no
+any OAuth-aware MCP client) connector with a normal browser login - no
 manual token pasting, no bypassing OAuth. Your actual tools live in
 server.py; everything here is generic.
 """
@@ -77,7 +77,7 @@ def _requested_actor(request: Request) -> str:
 
 
 async def handle_mcp(request: Request):
-    """POST/GET/DELETE /mcp — the actual MCP protocol endpoint.
+    """POST/GET/DELETE /mcp - the actual MCP protocol endpoint.
 
     Every request must carry a bearer token (Authorization header) that is
     (a) a validly-signed JWT and (b) still present in the oauth_tokens table
@@ -119,7 +119,7 @@ async def handle_mcp(request: Request):
     # absence is the whole check. Without this, anything reached through a
     # proxy would be recorded as the proxy's own machine account, and the
     # audit trail would answer "which service wrote this" instead of "who
-    # asked for it" — the question it exists for. With it, a caller holding
+    # asked for it" - the question it exists for. With it, a caller holding
     # an ordinary token cannot present itself as somebody else, because its
     # token cannot carry the claim that would let it.
     if user.get("svc"):
@@ -191,7 +191,7 @@ app = Starlette(
 
 
 # ============================================================================
-# CLI — first-time setup and user management
+# CLI - first-time setup and user management
 # ============================================================================
 
 def _getpass_stars(prompt="Password: ") -> str:
@@ -223,12 +223,12 @@ def _getpass_stars(prompt="Password: ") -> str:
 
 
 def run_setup_wizard():
-    """`python -m app.main --setup` — interactive first-time config bootstrap."""
+    """`python -m app.main --setup` - interactive first-time config bootstrap."""
     import json
     import secrets as _secrets
     from pathlib import Path as _Path
 
-    print("\nMCP Auth Starter — first-time setup")
+    print("\nMCP Auth Starter - first-time setup")
     print("=" * 40)
 
     def ask(prompt, default=""):
@@ -276,20 +276,20 @@ def run_setup_wizard():
             _cu("admin", pw)
             print("✓ admin user created")
         else:
-            print("  Skipped — run: python -m app.main --adduser")
+            print("  Skipped - run: python -m app.main --adduser")
 
     print("\nSetup complete. Start with: python -m app.main\n")
 
 
 def run_addserviceclient():
-    """`python -m app.main --add-service-client` — provision a machine client
+    """`python -m app.main --add-service-client` - provision a machine client
     for the client_credentials grant.
 
     Deliberately a CLI step and not an HTTP endpoint: see
     oauth.create_service_client for why granting this over the open
     registration endpoint would hand out /mcp access to anyone who asked.
 
-    The secret is printed once and never again — only its value is stored,
+    The secret is printed once and never again - only its value is stored,
     and there is nothing here that can show it a second time, same as any
     other credential this project mints.
     """
@@ -308,20 +308,20 @@ def run_addserviceclient():
     except ValueError as e:
         print(f"{e}")
         return
-    # codeql[py/clear-text-logging-sensitive-data] — one-time stdout display to
+    # codeql[py/clear-text-logging-sensitive-data] - one-time stdout display to
     # the operator running this command, not a log file/aggregator; only the
     # secret's value is stored, so showing it once here is the only moment it
     # can be captured at all. Same "shown once, never persisted in plaintext
-    # again" pattern installer.py's generated-password display already uses —
+    # again" pattern installer.py's generated-password display already uses -
     # see docs/security.md.
-    print("\n✓ Created. Store these now — the secret is not recoverable:")
+    print("\n✓ Created. Store these now - the secret is not recoverable:")
     print(f"  client_id:     {client['client_id']}")
     print(f"  client_secret: {client['client_secret']}")
     print(f"  acts as:       {client['service_username']}")
 
 
 def run_adduser():
-    """`python -m app.main --adduser` — create or reset a user without the full wizard."""
+    """`python -m app.main --adduser` - create or reset a user without the full wizard."""
     from users import create_user, get_user, hash_password, _ensure_db_schema as _schema
     from config import DB_PATH
 

@@ -380,7 +380,7 @@ class TestOauthLoginConsent:
         assert "http://localhost/cb" in r.text
 
     def test_escapes_malicious_client_name(self, test_client, tmp_db):
-        # client_name comes straight from open DCR registration — must not
+        # client_name comes straight from open DCR registration - must not
         # let a malicious client XSS the login page it's asking users to sign in on
         oauth._ensure_tokens_table()
         payload = "<script>alert(1)</script>"
@@ -458,7 +458,7 @@ class TestOauthClients:
         assert oauth_clients[created["client_id"]]["application_type"] == "native"
 
     def test_migrates_pre_existing_db_missing_the_column(self, tmp_db):
-        # simulates a DB created before application_type existed (SEP-837) —
+        # simulates a DB created before application_type existed (SEP-837) -
         # _ensure_tokens_table's ALTER TABLE must backfill it without raising
         conn = sqlite3.connect(str(tmp_db))
         conn.execute("""CREATE TABLE oauth_clients (
@@ -537,7 +537,7 @@ class TestOauthClientsRegister:
     def test_does_not_reject_web_client_with_localhost_redirect(self, test_client, tmp_db):
         # SEP-837 lets a client declare application_type so a real OIDC AS
         # doesn't wrongly default it to "web" and reject a localhost
-        # redirect_uri — but this server isn't an OIDC AS and never enforced
+        # redirect_uri - but this server isn't an OIDC AS and never enforced
         # that constraint, so a "web" app registering localhost still works
         oauth._ensure_tokens_table()
         r = test_client.post(
@@ -566,7 +566,7 @@ class TestProtectedResourceMetadata:
 class TestOauthMetadata:
     def test_advertises_none_auth_method_for_cimd_clients(self, test_client):
         # "none" is legitimate here: CIMD clients (client_id is an https URL, no
-        # pre-shared secret) authenticate via PKCE instead — see
+        # pre-shared secret) authenticate via PKCE instead - see
         # TestOauthTokenCimd. DCR-registered clients still always get a
         # client_secret and /oauth/token still requires it for those.
         body = test_client.get("/.well-known/oauth-authorization-server").json()
@@ -582,7 +582,7 @@ class TestOauthMetadata:
         assert "refresh_token" in body["grant_types_supported"]
 
     def test_advertises_client_credentials_grant(self, test_client):
-        # The MCP client-credentials extension makes advertising it a MUST —
+        # The MCP client-credentials extension makes advertising it a MUST -
         # a machine client discovers whether this flow is available at all
         # from here, and has nothing else to go on.
         body = test_client.get("/.well-known/oauth-authorization-server").json()
@@ -591,7 +591,7 @@ class TestOauthMetadata:
     def test_advertises_a_client_auth_method_the_extension_accepts(self, test_client):
         # The extension requires at least one of private_key_jwt /
         # client_secret_basic. This server implements the secret methods, so
-        # the metadata has to name client_secret_basic — and the grant has to
+        # the metadata has to name client_secret_basic - and the grant has to
         # actually accept it (covered in TestOauthTokenClientCredentialsGrant).
         body = test_client.get("/.well-known/oauth-authorization-server").json()
         assert "client_secret_basic" in body["token_endpoint_auth_methods_supported"]
@@ -694,7 +694,7 @@ class TestFetchCimdMetadata:
 
     def _bypass_ssrf_check(self, monkeypatch):
         # these tests exercise document fetch/validation, not the SSRF guard
-        # itself (that's TestHostIsPublic + test_private_host_blocked_below) —
+        # itself (that's TestHostIsPublic + test_private_host_blocked_below) -
         # bypassing it here also sidesteps needing real DNS for app.example.com
         monkeypatch.setattr(oauth, "_host_is_public", lambda host: True)
 
@@ -724,7 +724,7 @@ class TestFetchCimdMetadata:
 
     @pytest.mark.parametrize("auth_method", ["client_secret_post", "client_secret_basic", "client_secret_jwt"])
     async def test_shared_secret_auth_method_rejected(self, monkeypatch, auth_method):
-        # CIMD draft §4 — a "secret" published in a document anyone can fetch
+        # CIMD draft §4 - a "secret" published in a document anyone can fetch
         # isn't a secret; a document claiming one is malformed/misconfigured
         self._bypass_ssrf_check(monkeypatch)
         doc = {
@@ -769,7 +769,7 @@ class TestFetchCimdMetadata:
         assert await oauth._fetch_cimd_metadata(self.CID) is None
 
     async def test_private_host_blocked_before_any_network_call(self, monkeypatch):
-        # real _host_is_public here (not bypassed) — this is the one test that
+        # real _host_is_public here (not bypassed) - this is the one test that
         # exercises the actual SSRF guard, using a loopback literal so it needs
         # no DNS either
         calls = []
@@ -913,7 +913,7 @@ class TestOauthAuthorize:
 
     def test_state_preserved_for_login(self, test_client, tmp_db):
         # state lives server-side in oauth_pending now, not in the /oauth/login
-        # URL — it's only echoed back to the client in the final redirect
+        # URL - it's only echoed back to the client in the final redirect
         oauth._ensure_tokens_table()
         client = create_oauth_client("app", ["http://localhost/cb"])
         _, challenge = _pkce_pair()
@@ -1011,7 +1011,7 @@ class TestOauthAuthorize:
         assert r.status_code in (302, 303, 307)
 
     def test_allows_omitted_resource(self, test_client, tmp_db):
-        # not every client sends `resource` — absence must not be rejected outright
+        # not every client sends `resource` - absence must not be rejected outright
         oauth._ensure_tokens_table()
         client = create_oauth_client("app", ["http://localhost/cb"])
         _, challenge = _pkce_pair()
@@ -1023,7 +1023,7 @@ class TestOauthAuthorize:
 
     def test_two_flows_with_the_same_client_state_do_not_clobber_each_other(self, test_client, tmp_db):
         # state is client-controlled and echoed back verbatim, never used as a
-        # lookup key — a client (or two different clients) reusing the same
+        # lookup key - a client (or two different clients) reusing the same
         # state value must not corrupt either flow's pending redirect_uri/PKCE.
         oauth._ensure_tokens_table()
         client_a = create_oauth_client("app-a", ["http://a.example/cb"])
@@ -1099,7 +1099,7 @@ class TestOauthLoginPost:
         assert "mystate" in loc
 
     def test_success_redirect_includes_iss(self, test_client, tmp_db, dummy_user):
-        # RFC 9207 — lets the client detect a response mixed up with a
+        # RFC 9207 - lets the client detect a response mixed up with a
         # different authorization server it also talks to
         login_id = _seed_pending(redirect_uri="http://localhost/cb", client_id="c", state="mystate")
         _set_login_cookie(test_client, login_id)
@@ -1242,7 +1242,7 @@ class TestOauthTokenClientAuth:
         assert r.status_code == 401
 
     def test_code_without_client_id_needs_no_auth(self, test_client, tmp_db, dummy_user):
-        # NOT a supported "public client" flow — every code minted by the real
+        # NOT a supported "public client" flow - every code minted by the real
         # /oauth/authorize -> /oauth/login chain always carries a client_id
         # (see oauth_login_post). This only exercises oauth_token's defensive
         # `if info.get("client_id")` skip, which exists so a code injected
@@ -1293,7 +1293,7 @@ class TestOauthTokenPkce:
         assert r.status_code == 400
 
     def test_non_ascii_code_verifier_fails_cleanly(self, test_client, tmp_db, dummy_user):
-        # code_verifier gets .encode("ascii")'d before hashing — a malformed
+        # code_verifier gets .encode("ascii")'d before hashing - a malformed
         # non-ASCII value must come back as invalid_grant, not a 500
         _, challenge = _pkce_pair()
         oauth_codes["pkce6"] = {
@@ -1315,7 +1315,7 @@ class TestOauthTokenPkce:
         assert "access_token" in r.json()
 
     def test_code_without_challenge_needs_no_verifier(self, test_client, tmp_db, dummy_user):
-        # NOT a "PKCE optional" flow — every code minted via the real
+        # NOT a "PKCE optional" flow - every code minted via the real
         # /oauth/authorize -> /oauth/login chain always carries a
         # code_challenge (authorize rejects requests without one). This only
         # exercises oauth_token's defensive `if info.get("code_challenge")`
@@ -1340,7 +1340,7 @@ class TestOauthTokenPkce:
 
 
 # ---------------------------------------------------------------------------
-# oauth_token — resource parameter (RFC 8707 audience binding)
+# oauth_token - resource parameter (RFC 8707 audience binding)
 # ---------------------------------------------------------------------------
 
 class TestOauthTokenResourceParameter:
@@ -1368,7 +1368,7 @@ class TestOauthTokenResourceParameter:
 
 
 # ---------------------------------------------------------------------------
-# oauth_token — refresh_token grant (rotation, RFC 6749 + OAuth 2.1 §4.3.1)
+# oauth_token - refresh_token grant (rotation, RFC 6749 + OAuth 2.1 §4.3.1)
 # ---------------------------------------------------------------------------
 
 class TestOauthTokenRefreshGrant:
@@ -1487,7 +1487,7 @@ class TestOauthTokenClientCredentialsGrant:
     """RFC 6749 §4.4 (kept in OAuth 2.1), shaped by the MCP
     client-credentials extension: a service authenticating as itself, with
     no user at a browser. What every test here is really circling is the one
-    way this grant could be a hole — /oauth/clients/register is
+    way this grant could be a hole - /oauth/clients/register is
     unauthenticated by design, so if any registered client could use it,
     anyone able to POST there would get /mcp access without logging in.
     """
@@ -1556,7 +1556,7 @@ class TestOauthTokenClientCredentialsGrant:
         assert r.status_code == 200
 
     def test_no_refresh_token_is_issued(self, test_client, tmp_db, dummy_user):
-        # RFC 6749 §4.4.3 — a client that can re-authenticate at will has
+        # RFC 6749 §4.4.3 - a client that can re-authenticate at will has
         # nothing to refresh, and issuing one would only create a long-lived
         # credential to look after.
         oauth._ensure_tokens_table()
@@ -1627,7 +1627,7 @@ class TestOauthTokenRefreshGrantCimdClient:
     """A CIMD client (draft-ietf-oauth-client-id-metadata-document) is public:
     its client_id is an https URL anyone can fetch and there is no shared
     secret. It is never in oauth_clients, so requiring one on the refresh
-    grant let such a client connect and then fail every refresh afterwards —
+    grant let such a client connect and then fail every refresh afterwards -
     a connector that dropped one access-token lifetime after every login.
     """
 
@@ -1648,7 +1648,7 @@ class TestOauthTokenRefreshGrantCimdClient:
         assert body["refresh_token"] != refresh
 
     def test_cimd_refresh_token_is_still_one_time_use(self, test_client, tmp_db, dummy_user):
-        # the exemption is from the secret check only — rotation, which is what
+        # the exemption is from the secret check only - rotation, which is what
         # RFC 6749 §10.4 offers a public client instead, still applies
         oauth._ensure_tokens_table()
         refresh = issue_refresh_token(dummy_user, self.CIMD_ID)
@@ -1704,7 +1704,7 @@ class TestOauthTokenRefreshGrantCimdClient:
         assert r.json()["error"] == "invalid_client"
 
     def test_missing_client_id_is_still_rejected(self, test_client, tmp_db, dummy_user):
-        # "" is not a CIMD id either — an omitted client_id must not slip
+        # "" is not a CIMD id either - an omitted client_id must not slip
         # through the exemption
         oauth._ensure_tokens_table()
         refresh = issue_refresh_token(dummy_user, self.CIMD_ID)

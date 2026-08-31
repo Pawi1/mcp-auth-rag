@@ -1,7 +1,7 @@
 # Security Policy
 
 This repo is an authentication/authorization implementation (OAuth 2.0 +
-JWT) — a bug here is a security bug by definition, not just a functional
+JWT) - a bug here is a security bug by definition, not just a functional
 one. Please report responsibly.
 
 ## Reporting a vulnerability
@@ -30,7 +30,7 @@ reach `call_tool()` without a valid, currently-active session, or that
 weakens password/token storage.
 
 Out of scope: the demo `whoami` tool itself, deployment scripts, and
-anything in `services/` (those are examples, not hardened configs — treat
+anything in `services/` (those are examples, not hardened configs - treat
 generated secrets, default users, etc. as yours to secure per-deployment).
 
 ## Known tradeoffs (not vulnerabilities, but worth knowing)
@@ -38,15 +38,15 @@ generated secrets, default users, etc. as yours to secure per-deployment).
 - `oauth_tokens`/`oauth_clients` are cached in-memory (`dict`) in addition
   to SQLite, for read speed. Every mutation writes through to the DB first,
   so a crash can't lose state, but if you run multiple processes behind a
-  load balancer, the in-memory cache **is not shared** — put SQLite on
+  load balancer, the in-memory cache **is not shared** - put SQLite on
   shared storage or move to a real DB before scaling horizontally.
 - Rate limiting (`_check_rate_limit`) is in-memory and per-process, same
   caveat.
 - Authorization codes and pending login transactions (`oauth_pending`,
-  keyed by `login_id`) are in-memory only, single-use, short-lived —
+  keyed by `login_id`) are in-memory only, single-use, short-lived -
   neither survives a server restart mid-flow. A restart between
   `/oauth/authorize` and `/oauth/token` just means starting over.
-- Dynamic Client Registration is open by default — anyone can hit
+- Dynamic Client Registration is open by default - anyone can hit
   `/oauth/clients/register` and get a `client_id`/`client_secret`
   without approval. That's fine for "add this as a personal MCP
   connector" use, but production deployments serving untrusted clients
@@ -57,28 +57,28 @@ generated secrets, default users, etc. as yours to secure per-deployment).
   token. Only a client provisioned at the CLI (`--add-service-client`,
   which sets `service_username`) may use it.
 - Client ID Metadata Documents (CIMD) are trusted on first fetch and
-  cached in-memory only (`_cimd_cache` in `app/oauth.py`) — same
+  cached in-memory only (`_cimd_cache` in `app/oauth.py`) - same
   cross-process caveat as above. `_host_is_public` blocks fetches to
   loopback/private/link-local addresses at resolution time, but doesn't
   pin the resolved IP for the actual request, so it doesn't fully close
   DNS-rebinding SSRF. There's no domain allowlist/trust policy either
-  (the CIMD spec calls this out as optional) — anyone can mint a
+  (the CIMD spec calls this out as optional) - anyone can mint a
   `client_id` URL and have this server fetch it. There's also no
-  `software_statement` (signed-JWT) support — the CIMD draft mentions
+  `software_statement` (signed-JWT) support - the CIMD draft mentions
   this as a complementary attestation layer for clients that can't hold
   a backend secret, but it's a separate, non-trivial feature this
   starter doesn't implement.
 - This server is a self-contained authorization server + resource
-  server — it mints and validates its own tokens, and never forwards a
+  server - it mints and validates its own tokens, and never forwards a
   client's token (or a token it minted on a user's behalf) to any
   third-party API. That means the "token passthrough" and "confused
   deputy via OAuth proxy" failure modes that show up in MCP security
   writeups don't apply here by construction. If you fork this to sit in
   front of an upstream API, that architecture (and its own token
-  handling) is yours to secure — see [OAuth 2.1 §7](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1-13#name-security-considerations)
+  handling) is yours to secure - see [OAuth 2.1 §7](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1-13#name-security-considerations)
   and the MCP spec's [confused deputy guidance](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations#confused-deputy-problem).
 
 ## Supported versions
 
-Pre-1.0, single-branch — only `main` is supported. There's no version
+Pre-1.0, single-branch - only `main` is supported. There's no version
 matrix yet.

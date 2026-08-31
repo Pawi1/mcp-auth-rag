@@ -28,7 +28,7 @@ def _b64url(data: dict) -> str:
 
 
 def _make_alg_none_token(username="attacker", teams=None, exp_offset=3600) -> str:
-    """Hand-crafts the classic 'alg: none' attack token — no signature at all,
+    """Hand-crafts the classic 'alg: none' attack token - no signature at all,
     just a header claiming none is needed. verify_token must reject this on
     the strength of the explicit `algorithms=[ALGORITHM]` allowlist passed to
     jwt.decode, not on the (absent) signature."""
@@ -85,7 +85,7 @@ class TestVerifyToken:
 
 
 # ---------------------------------------------------------------------------
-# audience binding (RFC 8707) — see oauth.issue_token / oauth.MCP_RESOURCE_URI
+# audience binding (RFC 8707) - see oauth.issue_token / oauth.MCP_RESOURCE_URI
 # ---------------------------------------------------------------------------
 
 class TestVerifyTokenAudience:
@@ -118,7 +118,7 @@ class TestVerifyTokenAudience:
 
 
 # ---------------------------------------------------------------------------
-# algorithm confusion — verify_token only trusts ALGORITHM (HS256), never
+# algorithm confusion - verify_token only trusts ALGORITHM (HS256), never
 # whatever algorithm the token's own header claims
 # ---------------------------------------------------------------------------
 
@@ -130,14 +130,14 @@ class TestVerifyTokenAlgorithm:
 
     async def test_alg_none_is_rejected_even_with_admin_claims(self):
         # the interesting case isn't "malformed token" but "otherwise-valid-
-        # looking claims, just unsigned" — this must fail the same way
+        # looking claims, just unsigned" - this must fail the same way
         token = _make_alg_none_token(username="root", teams=["admins", "superuser"])
         with pytest.raises(ValueError):
             await verify_token(token)
 
     async def test_wrong_algorithm_is_rejected(self):
         # signed with the real secret, but a different algorithm than this
-        # server is configured for — jwt.decode's algorithms=[ALGORITHM]
+        # server is configured for - jwt.decode's algorithms=[ALGORITHM]
         # allowlist must reject it regardless of signature validity
         payload = {"sub": "user", "teams": [], "exp": int(time.time()) + 3600}
         token = jwt.encode(payload, SECRET_KEY, algorithm="HS384")

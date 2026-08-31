@@ -1,5 +1,5 @@
 """
-MCP Auth Starter — configuration. Loads from config.json, secrets from env vars.
+MCP Auth Starter - configuration. Loads from config.json, secrets from env vars.
 """
 
 import json
@@ -30,7 +30,7 @@ def _p(keys: str, default=None):
     return node if node is not None else default
 
 
-# Security — secrets always from env vars
+# Security - secrets always from env vars
 SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-key-change-in-production")
 ALGORITHM = "HS256"
 
@@ -53,11 +53,11 @@ MCP_PORT           = int(os.getenv("MCP_PORT", str(_p("server.port", 8000))))
 # Auth
 # token_expire_days now governs the long-lived refresh_token; the bearer access
 # token sent on every MCP request is short-lived (access_token_expire_minutes)
-# so a leaked one has a small blast radius — the MCP client refreshes silently.
+# so a leaked one has a small blast radius - the MCP client refreshes silently.
 REFRESH_TOKEN_EXPIRE_DAYS   = int(_p("auth.token_expire_days", 90))
 ACCESS_TOKEN_EXPIRE_MINUTES = int(_p("auth.access_token_expire_minutes", 60))
 
-# Canonical resource URI for this MCP server — RFC 8707 / RFC 9728 audience
+# Canonical resource URI for this MCP server - RFC 8707 / RFC 9728 audience
 # binding, so a token issued here can't be replayed against a different
 # resource server even if it shared the same signing key.
 MCP_RESOURCE_URI = f"{SERVER_URL.rstrip('/')}/mcp"
@@ -67,6 +67,6 @@ MCP_RESOURCE_URI = f"{SERVER_URL.rstrip('/')}/mcp"
 # for before it starts the flow.
 MCP_SCOPE = "mcp"
 
-# Setup state — used by startup checks to detect missing config
+# Setup state - used by startup checks to detect missing config
 CONFIG_PATH  = _cfg_path
 CONFIG_FOUND = _cfg_path.exists()

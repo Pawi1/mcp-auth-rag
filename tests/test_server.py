@@ -1,4 +1,4 @@
-"""Tests for server.py — the demo `whoami` tool and the auth gate in call_tool()."""
+"""Tests for server.py - the demo `whoami` tool and the auth gate in call_tool()."""
 
 import json
 import sqlite3

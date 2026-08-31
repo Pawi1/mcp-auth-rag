@@ -22,7 +22,7 @@ and `mcp-name` headers. This needed no change here: the mcp 2.x SDK serves
 that transport alongside the older session-based one, and `main.py`'s bearer
 token check runs ahead of both, so authorization behaves the same either way.
 
-`legacy` tops out at protocol **2025-11-25** — mcp 1.x does not implement
+`legacy` tops out at protocol **2025-11-25** - mcp 1.x does not implement
 2026-07-28. A client that only speaks the newer protocol cannot talk to a
 server built on that branch.
 
@@ -65,16 +65,16 @@ mcp_server = Server(
 Concretely:
 
 - `list_tools()` must now return `types.ListToolsResult`, not a bare `list[Tool]`.
-- `call_tool()` must now return `types.CallToolResult`, not a bare `list[TextContent]` — wrap your content list in `CallToolResult(content=...)`.
+- `call_tool()` must now return `types.CallToolResult`, not a bare `list[TextContent]` - wrap your content list in `CallToolResult(content=...)`.
 - Both handlers take `(ctx, params)`; `call_tool`'s tool name and arguments arrive as `params.name` / `params.arguments` (a `CallToolRequestParams`), not as two positional arguments.
 - `mcp.types` (`Tool`, `TextContent`, etc.) still re-exports everything from the new `mcp_types` package, so those imports are unchanged.
-- `mcp.server.streamable_http_manager.StreamableHTTPSessionManager` and its `app=`/`stateless=` constructor arguments are unchanged — `main.py` needs no changes for this migration.
+- `mcp.server.streamable_http_manager.StreamableHTTPSessionManager` and its `app=`/`stateless=` constructor arguments are unchanged - `main.py` needs no changes for this migration.
 
 ## What this repo's migration actually did
 
 See `app/server.py` on `main`: `list_tools()`/`call_tool()` kept their old,
-simple `(name, arguments)` shape — easy to unit-test, and reused by
-`tests/test_server.py` unchanged — with two thin adapters,
+simple `(name, arguments)` shape - easy to unit-test, and reused by
+`tests/test_server.py` unchanged - with two thin adapters,
 `_on_list_tools`/`_on_call_tool`, translating between that shape and what
 the mcp 2.0 `Server` constructor requires. If you have more than one or two
 tools, you likely want the same split: keep your tool logic in
@@ -92,7 +92,7 @@ Steps to migrate your own fork:
    independently testable).
 5. Construct `Server(...)` with `on_list_tools=`/`on_call_tool=` instead of
    decorating after construction.
-6. Run your test suite — if it calls `list_tools()`/`call_tool()` directly
+6. Run your test suite - if it calls `list_tools()`/`call_tool()` directly
    (as this repo's does) rather than through `Server`'s dispatch, it should
    need no changes beyond what's already covered above.
 
@@ -100,10 +100,10 @@ Steps to migrate your own fork:
 
 mcp 2.0's dispatcher runs each inbound request's handler using the async
 context captured from whichever task *sent* that message onto the session's
-stream — not the context of the long-lived per-session task that's actually
+stream - not the context of the long-lived per-session task that's actually
 consuming it. In practice this means a `ContextVar` you set per-HTTP-request
 (like this repo's `context.current_user`, set in `main.py`'s `/mcp` handler)
 still reaches your tool handler correctly on every request, even though the
 handler technically executes inside a persistent per-session task that
-outlives any single request. Nothing to change here — just don't be
+outlives any single request. Nothing to change here - just don't be
 surprised if you go looking for where that's wired up.

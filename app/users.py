@@ -1,5 +1,5 @@
 """
-MCP Auth Starter — user accounts, password hashing, login rate-limit signal.
+MCP Auth Starter - user accounts, password hashing, login rate-limit signal.
 """
 
 import logging
@@ -84,7 +84,7 @@ def log_login_attempt(username: str, ip: str, success: bool, reason: str = "") -
 
 def log_tool_call(username: str, tool_name: str, success: bool = True, reason: str = "") -> None:
     """Durable, queryable record of who called which tool and whether it was
-    allowed — so 'who ran delete_customer, and when' is a query against
+    allowed - so 'who ran delete_customer, and when' is a query against
     tool_call_log, not a grep through log files after the fact."""
     try:
         conn = db.connect(DB_PATH)
@@ -100,7 +100,7 @@ def log_tool_call(username: str, tool_name: str, success: bool = True, reason: s
 def _check_login_anomaly(ip: str) -> None:
     """Log a warning if the same IP racks up many failed logins in a short window.
 
-    Wire your own alert channel here (Slack/email/Telegram/whatever) — this
+    Wire your own alert channel here (Slack/email/Telegram/whatever) - this
     just makes the signal visible in the log by default.
     """
     try:

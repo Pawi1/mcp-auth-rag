@@ -1,12 +1,12 @@
 """
-MCP Auth Starter — MCP tool definitions and dispatch.
+MCP Auth Starter - MCP tool definitions and dispatch.
 
 Add your own tools with the @tool decorator; the registry it fills is the
 only source for both list_tools() and call_tool(), so the two cannot drift
 apart, and every call is audited whatever the handler does. Handlers take
 (user, arguments) and return a dict.
 
-current_user.get() is always populated by the time a handler runs —
+current_user.get() is always populated by the time a handler runs -
 main.py's /mcp handler rejects the request before it gets here if the
 token is missing, invalid, or revoked.
 
@@ -41,10 +41,10 @@ logger = logging.getLogger("mcp-auth-starter")
 SERVER_INSTRUCTIONS = """This server demonstrates a working MCP auth/transport stack:
 OAuth 2.0 with Dynamic Client Registration (RFC 7591) + JWT bearer tokens,
 served over Streamable HTTP. Add a connector pointing at this server's URL
-and your MCP client (e.g. Claude.ai) will complete a normal browser login —
+and your MCP client (e.g. Claude.ai) will complete a normal browser login -
 no manual token pasting required.
 
-`whoami` is the one demo tool — it just echoes back the authenticated
+`whoami` is the one demo tool - it just echoes back the authenticated
 user's identity, to prove the auth chain is wired correctly end to end.
 Replace it with your own tools in server.py."""
 
@@ -80,7 +80,7 @@ async def list_tools() -> List[Tool]:
 async def call_tool(name: str, arguments: dict) -> List[TextContent]:
     user = current_user.get()
     if not user:
-        return _ok({"error": "Not authenticated — connect via OAuth"})
+        return _ok({"error": "Not authenticated - connect via OAuth"})
 
     entry = _TOOLS.get(name)
     if entry is None:

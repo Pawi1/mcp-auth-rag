@@ -1,5 +1,5 @@
 """
-MCP Auth Starter — OAuth 2.0 (RFC 6749 authorization code flow, Client ID
+MCP Auth Starter - OAuth 2.0 (RFC 6749 authorization code flow, Client ID
 Metadata Documents with RFC 7591 Dynamic Client Registration as a fallback
 for client identification, RFC 8414/8707/9728 discovery, RFC 9207 issuer
 validation), enough for Claude.ai and other MCP clients to add this server
@@ -35,7 +35,7 @@ logger = logging.getLogger("mcp-auth-starter")
 
 oauth_tokens: dict = {}   # token → {issued_at, username}
 oauth_codes: dict = {}    # code → {redirect_uri, state, username, issued_at, client_id, code_challenge}
-oauth_pending: dict = {}  # login_id → {redirect_uri, client_id, state, code_challenge, issued_at, csrf_token} — before login
+oauth_pending: dict = {}  # login_id → {redirect_uri, client_id, state, code_challenge, issued_at, csrf_token} - before login
 oauth_clients: dict = {}  # client_id → {client_secret, name, redirect_uris}
 
 _failed_attempts: dict = {}  # ip → [timestamps of failed logins]
@@ -55,7 +55,7 @@ _CIMD_MAX_BYTES = 8 * 1024    # the CIMD draft (§6) recommends ~5 KiB; a little
 _CIMD_CACHE_TTL_DEFAULT = 300 # seconds, used when the response has no Cache-Control max-age
 _CIMD_CACHE_TTL_MAX = 3600    # cap how long a document is trusted even if max-age asks for longer
 
-# draft §4 — a document MUST NOT claim a shared-secret auth method (a "secret"
+# draft §4 - a document MUST NOT claim a shared-secret auth method (a "secret"
 # published in a document anyone can fetch isn't one)
 _CIMD_FORBIDDEN_AUTH_METHODS = {"client_secret_post", "client_secret_basic", "client_secret_jwt"}
 
@@ -98,7 +98,7 @@ def _ensure_tokens_table():
         pass  # column already exists
     try:
         # Non-empty only for a client provisioned deliberately as a machine
-        # client (create_service_client) — the identity its tokens are issued
+        # client (create_service_client) - the identity its tokens are issued
         # for. Registration through DCR never sets it, which is what stops
         # the client_credentials grant from being reachable by anyone who can
         # POST to /oauth/clients/register. See that grant in oauth_token().
@@ -136,7 +136,7 @@ def load_clients_from_db():
 
 def create_oauth_client(name: str, redirect_uris: list = None, application_type: str = "web") -> dict:
     """application_type is OIDC Dynamic Client Registration's native-vs-web hint
-    (SEP-837) — this server isn't an OIDC provider and doesn't enforce any
+    (SEP-837) - this server isn't an OIDC provider and doesn't enforce any
     redirect_uri constraints from it, just stores and echoes it back so MCP
     clients that send it (as the spec now requires) get a clean registration
     instead of the field being silently dropped."""
@@ -151,16 +151,16 @@ def create_service_client(name: str, service_username: str) -> dict:
     only way to get a client it will accept.
 
     Deliberately not reachable over HTTP. /oauth/clients/register is
-    unauthenticated by design (RFC 7591 — it is how an MCP client registers
+    unauthenticated by design (RFC 7591 - it is how an MCP client registers
     itself), so if the grant accepted any registered client, anyone able to
     reach that endpoint could register one and mint an access token for /mcp
     without ever logging in. The MCP client-credentials extension says the
-    same in one line — "Dynamic Client Registration is not used in this
-    flow" — and this split is what enforces it here: DCR leaves
+    same in one line - "Dynamic Client Registration is not used in this
+    flow" - and this split is what enforces it here: DCR leaves
     service_username empty, and only an operator running the CLI sets it.
 
     `service_username` must already exist as a user, because that is where
-    the token's identity and teams come from (issue_token reads them) — a
+    the token's identity and teams come from (issue_token reads them) - a
     machine client is a way to *authenticate as* an account without a
     password prompt, not a way to invent an account that no authorization
     check knows about.
@@ -168,7 +168,7 @@ def create_service_client(name: str, service_username: str) -> dict:
     from users import get_user
 
     if not get_user(service_username):
-        raise ValueError(f"No such user: {service_username!r} — create it first (mcp-adduser).")
+        raise ValueError(f"No such user: {service_username!r} - create it first (mcp-adduser).")
     return _insert_client(name, [], "web", service_username=service_username)
 
 
@@ -201,7 +201,7 @@ def _insert_client(name: str, redirect_uris: list, application_type: str, *, ser
 
 
 def _redirect_uri_valid(client_id: str, redirect_uri: str) -> bool:
-    """RFC 6749 §3.1.2.3 — redirect_uri must exactly match one registered for the client.
+    """RFC 6749 §3.1.2.3 - redirect_uri must exactly match one registered for the client.
 
     An empty redirect_uri is allowed: it means the flow ends with the
     in-browser "signed in" page instead of a redirect, so there's nothing
@@ -217,17 +217,17 @@ _CODE_CHALLENGE_RE = re.compile(r"[A-Za-z0-9\-._~]{43,128}")
 
 
 def _code_challenge_valid(code_challenge: str) -> bool:
-    """RFC 7636 §4.1 — 43-128 chars of unreserved URL-safe charset."""
+    """RFC 7636 §4.1 - 43-128 chars of unreserved URL-safe charset."""
     return bool(code_challenge) and _CODE_CHALLENGE_RE.fullmatch(code_challenge) is not None
 
 
 def _code_verifier_valid(code_verifier: str) -> bool:
-    """RFC 7636 §4.1 — code_verifier follows the same charset/length rule as code_challenge."""
+    """RFC 7636 §4.1 - code_verifier follows the same charset/length rule as code_challenge."""
     return _code_challenge_valid(code_verifier)
 
 
 def _resource_valid(resource: str) -> bool:
-    """RFC 8707 — if a client specifies a target resource, it must be this server's
+    """RFC 8707 - if a client specifies a target resource, it must be this server's
     canonical URI. Absent is allowed (not every client sends it), but a mismatched
     one is rejected outright rather than silently issuing a token for the wrong resource.
     """
@@ -238,7 +238,7 @@ def _is_cimd_client_id(client_id: str) -> bool:
     """A Client ID Metadata Document (draft-ietf-oauth-client-id-metadata-document-00
     §4) names itself with an https URL that has a path component, e.g.
     'https://app.example.com/client.json', and per that section MUST NOT carry a
-    fragment, userinfo, or '.'/'..' path segments — anything else (in particular,
+    fragment, userinfo, or '.'/'..' path segments - anything else (in particular,
     the opaque ids this server hands out via DCR) is not a CIMD client_id.
     """
     try:
@@ -257,7 +257,7 @@ def _is_cimd_client_id(client_id: str) -> bool:
 def _host_is_public(host: str) -> bool:
     """Reject loopback/private/link-local targets before fetching a client-supplied
     metadata URL, so a malicious client_id can't be used to probe internal network
-    services (SSRF — CIMD draft §6.3). Doesn't defend against DNS rebinding between
+    services (SSRF - CIMD draft §6.3). Doesn't defend against DNS rebinding between
     this check and the actual fetch; see SECURITY.md."""
     try:
         infos = socket.getaddrinfo(host, None)
@@ -272,7 +272,7 @@ def _host_is_public(host: str) -> bool:
 
 async def _fetch_cimd_metadata(client_id: str) -> dict | None:
     """Fetch and validate a Client ID Metadata Document for a client_id that's an
-    https URL. Returns None on any fetch or validation failure — callers treat
+    https URL. Returns None on any fetch or validation failure - callers treat
     that the same as an unknown/unregistered client rather than raising.
     """
     cached = _cimd_cache.get(client_id)
@@ -346,7 +346,7 @@ async def close_http_client() -> None:
 
 
 def _pkce_challenge_from_verifier(code_verifier: str) -> str:
-    """RFC 7636 §4.2 — S256 transform of a PKCE code_verifier."""
+    """RFC 7636 §4.2 - S256 transform of a PKCE code_verifier."""
     digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
     return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
 
@@ -374,13 +374,13 @@ def _parse_basic_auth(header: str) -> tuple:
 
 def issue_token(username: str, *, service_client: str = "") -> str:
     """Issue a short-lived JWT access token (so verify_token can validate it from
-    Authorization header). Audience-bound to MCP_RESOURCE_URI — see auth.verify_token.
+    Authorization header). Audience-bound to MCP_RESOURCE_URI - see auth.verify_token.
 
     `service_client` is set only by the client_credentials grant, and lands in
     the token as an `svc` claim naming the machine client it was issued to.
     Nothing about authorization changes: the token still authenticates as
     `username` and carries that account's teams. What the claim buys is the
-    one thing a service token needs and a user token must never have — the
+    one thing a service token needs and a user token must never have - the
     right to say who it is acting for (see handle_mcp's X-MCP-Actor
     handling). A token minted through the login flow has no `svc` claim and
     so cannot make that claim at all, which is what stops one user
@@ -413,7 +413,7 @@ def issue_token(username: str, *, service_client: str = "") -> str:
 
 
 def issue_refresh_token(username: str, client_id: str = "") -> str:
-    """Issue a long-lived, opaque refresh token (DB-backed, not a JWT — nothing to decode)."""
+    """Issue a long-lived, opaque refresh token (DB-backed, not a JWT - nothing to decode)."""
     token = secrets.token_urlsafe(32)
     now = time.time()
     expires = now + 86400 * REFRESH_TOKEN_EXPIRE_DAYS
@@ -428,7 +428,7 @@ def issue_refresh_token(username: str, client_id: str = "") -> str:
 
 
 def redeem_refresh_token(token: str, client_id: str) -> str | None:
-    """Validate a refresh token and consume it (OAuth 2.1 §4.3.1 rotation — one-time
+    """Validate a refresh token and consume it (OAuth 2.1 §4.3.1 rotation - one-time
     use, the caller mints a fresh replacement). Returns the username, or None if the
     token is unknown, expired, or was issued to a different client_id."""
     try:
@@ -472,7 +472,7 @@ def is_token_active(token: str) -> bool:
         ).fetchone()
         return row is not None
     except Exception:
-        return False  # fail closed on DB error — revoked tokens stay revoked
+        return False  # fail closed on DB error - revoked tokens stay revoked
 
 
 def revoke_tokens_for_user(username: str) -> int:
@@ -574,7 +574,7 @@ def _page(title: str, body: str) -> str:
 # ============================================================================
 
 async def oauth_protected_resource(request: Request) -> JSONResponse:
-    """RFC 9728 — tells clients where the authorization server is, and which
+    """RFC 9728 - tells clients where the authorization server is, and which
     scopes to request when the WWW-Authenticate challenge carries none."""
     return JSONResponse({
         "resource": MCP_RESOURCE_URI,
@@ -600,7 +600,7 @@ async def oauth_metadata(request: Request) -> JSONResponse:
 
 
 async def oauth_clients_register(request: Request) -> JSONResponse:
-    """Dynamic Client Registration — RFC 7591"""
+    """Dynamic Client Registration - RFC 7591"""
     try:
         body = await request.body()
         data = json.loads(body) if body else {}
@@ -610,7 +610,7 @@ async def oauth_clients_register(request: Request) -> JSONResponse:
 
     name = data.get("client_name", "unknown-client")
     redirect_uris = data.get("redirect_uris", [])
-    # OIDC Dynamic Client Registration's native-vs-web hint (SEP-837) — MCP
+    # OIDC Dynamic Client Registration's native-vs-web hint (SEP-837) - MCP
     # clients now MUST send this; omitting it defaults to "web" under OIDC.
     # We're not an OIDC provider so we don't enforce anything from it (a
     # "web" app registering a localhost redirect_uri isn't rejected here),
@@ -687,7 +687,7 @@ async def oauth_authorize(request: Request) -> Response:
             status_code=400,
         )
 
-    # login_id is our own server-side transaction key — state is whatever the
+    # login_id is our own server-side transaction key - state is whatever the
     # client sent (or omitted), just carried through and echoed back to them,
     # never used to look anything up, so two flows sharing a state can't clobber
     # each other's oauth_pending entry. Everything the login flow needs lives
@@ -700,7 +700,7 @@ async def oauth_authorize(request: Request) -> Response:
         "code_challenge": code_challenge, "issued_at": time.time(),
         "csrf_token": csrf_token, "client_name": client_name,
     }
-    # binds the login transaction to the browser that started it — otherwise
+    # binds the login transaction to the browser that started it - otherwise
     # anyone who registers a client (DCR is open) could mint their own
     # login_id, send the bare /oauth/login link to a victim, and get an
     # authorization code for the victim's identity redirected to the
@@ -732,7 +732,7 @@ async def oauth_login(request: Request) -> Response:
     if pending is None:
         return _expired_login_page()
 
-    # so the person logging in can see what they're actually authorizing —
+    # so the person logging in can see what they're actually authorizing -
     # DCR is open and CIMD is self-asserted, so this is the only signal a user
     # gets before their credentials hand an authorization code to whichever app
     # asked for it. Resolved once in oauth_authorize (DCR/pre-registered lookup
@@ -741,7 +741,7 @@ async def oauth_login(request: Request) -> Response:
     redirect_display = _html.escape(pending["redirect_uri"]) if pending["redirect_uri"] else "this page (no redirect)"
 
     # for a CIMD client, client_name is just a string from a JSON document the
-    # client itself hosts — the URL's hostname is the harder-to-fake signal
+    # client itself hosts - the URL's hostname is the harder-to-fake signal
     # (CIMD draft §6.6), so show it alongside the self-reported name
     host_html = ""
     pending_client_id = pending.get("client_id", "")
@@ -808,7 +808,7 @@ async def oauth_login_post(request: Request) -> Response:
         log_login_attempt(username, ip, success=False, reason="bad_password")
         return RedirectResponse(err_url, status_code=303)
 
-    # only consume the login transaction once it actually succeeds — a bad
+    # only consume the login transaction once it actually succeeds - a bad
     # password shouldn't burn it and force the user to restart the flow
     oauth_pending.pop(login_id, None)
     redirect_uri = pending["redirect_uri"]
@@ -826,7 +826,7 @@ async def oauth_login_post(request: Request) -> Response:
 
     if redirect_uri:
         sep = "&" if "?" in redirect_uri else "?"
-        # RFC 9207 — lets the client tell this response apart from one forged/mixed
+        # RFC 9207 - lets the client tell this response apart from one forged/mixed
         # up with a different authorization server it also talks to
         iss = urllib.parse.quote(SERVER_URL, safe="")
         return RedirectResponse(f"{redirect_uri}{sep}code={code}&state={state}&iss={iss}", status_code=303)
@@ -869,8 +869,8 @@ async def oauth_token(request: Request) -> JSONResponse:
         # RFC 6749 §4.4, kept in OAuth 2.1, and shaped by the MCP
         # client-credentials extension (draft): machine-to-machine, no user
         # at a browser. What it exists for here is a service that has to call
-        # this server on its own — an MCP proxy fronting several instances,
-        # a scheduled job — where the authorization-code flow's login form
+        # this server on its own - an MCP proxy fronting several instances,
+        # a scheduled job - where the authorization-code flow's login form
         # has nobody to show itself to.
         #
         # The check that matters is service_username, not the secret. Client
@@ -902,10 +902,10 @@ async def oauth_token(request: Request) -> JSONResponse:
         # oauth_clients entry, which also holds client_secret, so CodeQL
         # over-taints the whole lookup as sensitive. a9ada80 met the same
         # flag in issue_token() and answered it by dropping the value from
-        # the line rather than suppressing — the client record still says
+        # the line rather than suppressing - the client record still says
         # who this was, so nothing diagnosable is actually lost.
         logger.info("Access token issued to a service client")
-        # No refresh_token, per RFC 6749 §4.4.3 — a client that can
+        # No refresh_token, per RFC 6749 §4.4.3 - a client that can
         # authenticate whenever it likes has nothing to refresh, and issuing
         # one would only create a long-lived credential to look after. It
         # also keeps this path clear of the rotation logic above entirely.
@@ -922,7 +922,7 @@ async def oauth_token(request: Request) -> JSONResponse:
                 {"error": "invalid_request", "error_description": "Missing refresh_token"},
                 status_code=400,
             )
-        # A CIMD client is public — its client_id is a URL anyone can read and
+        # A CIMD client is public - its client_id is a URL anyone can read and
         # there is no shared secret to present, so it is never in oauth_clients
         # (only DCR registration puts anything there). Demanding one here made
         # every such client authenticate once and then fail every refresh from
@@ -931,7 +931,7 @@ async def oauth_token(request: Request) -> JSONResponse:
         # access-token lifetime later, looking like a random disconnect.
         #
         # What replaces the secret is redeem_refresh_token()'s own client_id
-        # binding, checked immediately below — a refresh token is redeemable
+        # binding, checked immediately below - a refresh token is redeemable
         # only by the client it was issued to. For a public client that does
         # leave the token itself bearer-usable by anyone who has stolen it,
         # which is inherent to public clients (RFC 6749 §10.4); the rotation
@@ -944,7 +944,7 @@ async def oauth_token(request: Request) -> JSONResponse:
                     {"error": "invalid_client", "error_description": "Client authentication failed"},
                     status_code=401,
                 )
-        # one-time use (OAuth 2.1 §4.3.1 rotation) — a reused/expired/unknown
+        # one-time use (OAuth 2.1 §4.3.1 rotation) - a reused/expired/unknown
         # refresh_token, or one issued to a different client, all come back None
         username = redeem_refresh_token(refresh_token_in, client_id)
         if not username:
@@ -962,7 +962,7 @@ async def oauth_token(request: Request) -> JSONResponse:
             "scope": MCP_SCOPE,
         })
 
-    # peek, don't consume yet — a wrong client_secret or code_verifier
+    # peek, don't consume yet - a wrong client_secret or code_verifier
     # shouldn't burn a code that's still legitimately redeemable within its TTL
     info = oauth_codes.get(code)
     if not info or time.time() - info["issued_at"] > _AUTH_CODE_TTL:
@@ -973,10 +973,10 @@ async def oauth_token(request: Request) -> JSONResponse:
         )
 
     # codes minted for a registered client must be redeemed by that same,
-    # authenticated client — otherwise a leaked code is bearer-usable by anyone
+    # authenticated client - otherwise a leaked code is bearer-usable by anyone
     if info.get("client_id"):
         if _is_cimd_client_id(info["client_id"]):
-            # CIMD clients are public (token_endpoint_auth_method "none" — there's
+            # CIMD clients are public (token_endpoint_auth_method "none" - there's
             # no pre-shared secret, the client_id is just a URL anyone can read).
             # PKCE, checked below, is what actually proves this request came from
             # whoever received the code, same as any other public client.

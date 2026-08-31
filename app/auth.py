@@ -1,5 +1,5 @@
 """
-MCP Auth Starter — JWT verification.
+MCP Auth Starter - JWT verification.
 """
 
 import logging
@@ -29,7 +29,7 @@ async def verify_token(token: str) -> Dict:
     """
     try:
         # RFC 8707 / MCP 2026-07-28: the server MUST only accept tokens issued
-        # for it as the audience. Required, not optional — a token omitting
+        # for it as the audience. Required, not optional - a token omitting
         # "aud" would otherwise be accepted from any issuer sharing this key.
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM],
                              audience=MCP_RESOURCE_URI)
@@ -47,7 +47,7 @@ async def verify_token(token: str) -> Dict:
 
         logger.debug(f"Token verified for {username}, teams: {teams}")
         # `svc` names the machine client this token was issued to, and is
-        # present only on tokens minted by the client_credentials grant —
+        # present only on tokens minted by the client_credentials grant -
         # see oauth.issue_token. Callers use it to decide whether the request
         # may name someone it is acting for.
         return {"username": username, "teams": teams, "svc": payload.get("svc", "")}

@@ -1,4 +1,4 @@
-"""Tests for main.py — the /mcp auth gate and /health."""
+"""Tests for main.py - the /mcp auth gate and /health."""
 
 import sqlite3
 import time
@@ -91,7 +91,7 @@ class TestHandleMcpAuth:
         assert resp.status_code == 401
 
     def test_valid_signature_but_not_registered_401(self, client):
-        """A structurally-valid JWT never inserted into oauth_tokens must still 401 —
+        """A structurally-valid JWT never inserted into oauth_tokens must still 401 -
         this is what makes token revocation actually work."""
         token = _make_token()
         resp = client.post("/mcp", headers={"Authorization": f"Bearer {token}"})
@@ -130,7 +130,7 @@ class TestActingOnBehalfOf:
     """X-MCP-Actor lets a service client say which person a call is really
     for, so an audit trail downstream records them and not the machine
     account the proxy authenticates as. The gate is the `svc` claim, which
-    only the client_credentials grant puts on a token — every test here is
+    only the client_credentials grant puts on a token - every test here is
     about that gate holding.
     """
 

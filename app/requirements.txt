@@ -1,4 +1,4 @@
-# MCP Auth Starter — runtime dependencies
+# MCP Auth Starter - runtime dependencies
 
 starlette>=1.0.0
 uvicorn[standard]>=0.47.0
