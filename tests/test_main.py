@@ -1,6 +1,8 @@
 """Tests for main.py - the /mcp auth gate and /health."""
 
+import json
 import sqlite3
+import sys
 import time
 from unittest.mock import patch
 
@@ -201,3 +203,71 @@ class TestHealth:
         resp = client.get("/health")
         assert resp.status_code == 200
         assert resp.json() == {"status": "ok", "server": config.MCP_SERVER_NAME}
+
+
+class TestAddServiceClientCli:
+    """The non-interactive path. Minting a machine client is one step of
+    provisioning a whole site, so a script driving that has to be able to run
+    it - which means flags instead of prompts, JSON on stdout, and a non-zero
+    exit when it fails."""
+
+    def _run(self, monkeypatch, argv, tmp_db):
+        import io
+        import contextlib
+
+        monkeypatch.setattr(sys, "argv", ["main.py"] + argv)
+        out = io.StringIO()
+        code = 0
+        try:
+            with contextlib.redirect_stdout(out):
+                main.run_addserviceclient()
+        except SystemExit as e:
+            code = e.code or 0
+        return code, out.getvalue()
+
+    def test_flags_mint_a_client_with_no_prompt(self, monkeypatch, tmp_db):
+        import users
+
+        users._ensure_db_schema()
+        users.create_user("adam", "haslo12345678")
+        # input() would raise OSError under pytest's captured stdin, so a
+        # prompt sneaking back in fails this rather than hanging.
+        monkeypatch.setattr("builtins.input", lambda *a: (_ for _ in ()).throw(AssertionError("prompted")))
+
+        code, out = self._run(monkeypatch, ["--add-service-client", "--name", "mcp-proxy", "--user", "adam", "--json"], tmp_db)
+
+        assert code == 0
+        payload = json.loads(out)
+        assert payload["service_username"] == "adam"
+        assert payload["client_id"] and payload["client_secret"]
+
+    def test_json_goes_to_stdout_alone(self, monkeypatch, tmp_db):
+        # A caller parses stdout; anything else printed there breaks it.
+        import users
+
+        users._ensure_db_schema()
+        users.create_user("adam", "haslo12345678")
+        code, out = self._run(monkeypatch, ["--add-service-client", "--name", "n", "--user", "adam", "--json"], tmp_db)
+        assert code == 0
+        assert out.strip().startswith("{") and out.strip().endswith("}")
+
+    def test_an_unknown_user_exits_non_zero(self, monkeypatch, tmp_db):
+        # Silence read as success is the failure mode worth preventing here.
+        import users
+
+        users._ensure_db_schema()
+        code, _ = self._run(monkeypatch, ["--add-service-client", "--name", "n", "--user", "nobody", "--json"], tmp_db)
+        assert code == 1
+
+    def test_missing_flags_without_json_still_prompt(self, monkeypatch, tmp_db):
+        import users
+
+        users._ensure_db_schema()
+        users.create_user("adam", "haslo12345678")
+        answers = iter(["mcp-proxy", "adam"])
+        monkeypatch.setattr("builtins.input", lambda *a: next(answers))
+
+        code, out = self._run(monkeypatch, ["--add-service-client"], tmp_db)
+
+        assert code == 0
+        assert "client_id" in out

@@ -281,7 +281,7 @@ def run_setup_wizard():
     print("\nSetup complete. Start with: python -m app.main\n")
 
 
-def run_addserviceclient():
+def run_addserviceclient(argv=None):
     """`python -m app.main --add-service-client` - provision a machine client
     for the client_credentials grant.
 
@@ -289,24 +289,52 @@ def run_addserviceclient():
     oauth.create_service_client for why granting this over the open
     registration endpoint would hand out /mcp access to anyone who asked.
 
-    The secret is printed once and never again - only its value is stored,
-    and there is nothing here that can show it a second time, same as any
-    other credential this project mints.
+    Takes --name/--user, and prompts only for what was not given. That split
+    is the point: minting this client is a step in provisioning a whole site,
+    and a script driving that has nobody to answer a prompt. --json makes the
+    output parseable by whatever does the driving; without it the same values
+    are printed for a person to copy.
+
+    The secret is shown once either way. Only its value is stored, so this is
+    the only moment it can be captured at all.
     """
+    import argparse
+    import json as _json
+
     from config import DB_PATH
     from oauth import _ensure_tokens_table, create_service_client
 
+    parser = argparse.ArgumentParser(prog="main.py --add-service-client", add_help=False)
+    parser.add_argument("--add-service-client", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--name", default="", help="What is calling, e.g. 'mcp-proxy'")
+    parser.add_argument("--user", default="", help="Existing user this client acts as")
+    parser.add_argument("--json", action="store_true", help="Print the credentials as JSON")
+    args, _unknown = parser.parse_known_args(sys.argv[1:] if argv is None else argv)
+
     _ensure_tokens_table()
-    print(f"\nAdd a machine (client_credentials) client to {DB_PATH}")
-    name = input("Client name (what is calling, e.g. 'mcp-proxy'): ").strip()
-    username = input("Acts as which existing user: ").strip()
+    name = args.name.strip()
+    username = args.user.strip()
+    if not (name and username) and not args.json:
+        print(f"\nAdd a machine (client_credentials) client to {DB_PATH}")
+    name = name or input("Client name (what is calling, e.g. 'mcp-proxy'): ").strip()
+    username = username or input("Acts as which existing user: ").strip()
     if not name or not username:
-        print("Aborted.")
-        return
+        # Non-zero, so a caller that is not a person can tell this failed
+        # rather than reading an empty result as success.
+        print("Both a client name and a user are required.", file=sys.stderr)
+        sys.exit(1)
     try:
         client = create_service_client(name, username)
     except ValueError as e:
-        print(f"{e}")
+        print(f"{e}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.json:
+        print(_json.dumps({
+            "client_id": client["client_id"],
+            "client_secret": client["client_secret"],
+            "service_username": client["service_username"],
+        }))
         return
     # codeql[py/clear-text-logging-sensitive-data] - one-time stdout display to
     # the operator running this command, not a log file/aggregator; only the
