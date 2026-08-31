@@ -581,6 +581,21 @@ class TestOauthMetadata:
         body = test_client.get("/.well-known/oauth-authorization-server").json()
         assert "refresh_token" in body["grant_types_supported"]
 
+    def test_advertises_client_credentials_grant(self, test_client):
+        # The MCP client-credentials extension makes advertising it a MUST —
+        # a machine client discovers whether this flow is available at all
+        # from here, and has nothing else to go on.
+        body = test_client.get("/.well-known/oauth-authorization-server").json()
+        assert "client_credentials" in body["grant_types_supported"]
+
+    def test_advertises_a_client_auth_method_the_extension_accepts(self, test_client):
+        # The extension requires at least one of private_key_jwt /
+        # client_secret_basic. This server implements the secret methods, so
+        # the metadata has to name client_secret_basic — and the grant has to
+        # actually accept it (covered in TestOauthTokenClientCredentialsGrant).
+        body = test_client.get("/.well-known/oauth-authorization-server").json()
+        assert "client_secret_basic" in body["token_endpoint_auth_methods_supported"]
+
     def test_advertises_cimd_support(self, test_client):
         body = test_client.get("/.well-known/oauth-authorization-server").json()
         assert body["client_id_metadata_document_supported"] is True
@@ -1466,6 +1481,146 @@ class TestOauthTokenRefreshGrant:
         import asyncio
         user = asyncio.run(_verify(access_token))
         assert user["username"] == dummy_user
+
+
+class TestOauthTokenClientCredentialsGrant:
+    """RFC 6749 §4.4 (kept in OAuth 2.1), shaped by the MCP
+    client-credentials extension: a service authenticating as itself, with
+    no user at a browser. What every test here is really circling is the one
+    way this grant could be a hole — /oauth/clients/register is
+    unauthenticated by design, so if any registered client could use it,
+    anyone able to POST there would get /mcp access without logging in.
+    """
+
+    def test_service_client_gets_a_token_without_a_browser(self, test_client, tmp_db, dummy_user):
+        oauth._ensure_tokens_table()
+        client = oauth.create_service_client("mcp-proxy", dummy_user)
+
+        r = test_client.post("/oauth/token", data={
+            "grant_type": "client_credentials",
+            "client_id": client["client_id"], "client_secret": client["client_secret"],
+        })
+
+        assert r.status_code == 200, r.json()
+        assert r.json()["access_token"]
+        assert r.json()["token_type"] == "bearer"
+
+    def test_a_dcr_registered_client_cannot_use_the_grant(self, test_client, tmp_db, dummy_user):
+        # The whole point. Anyone can register through DCR; nobody gets a
+        # token out of it without an operator having said so at the CLI.
+        oauth._ensure_tokens_table()
+        client = create_oauth_client("some-app", ["http://localhost/cb"])
+
+        r = test_client.post("/oauth/token", data={
+            "grant_type": "client_credentials",
+            "client_id": client["client_id"], "client_secret": client["client_secret"],
+        })
+
+        assert r.status_code == 400
+        assert r.json()["error"] == "unauthorized_client"
+
+    def test_a_wrong_secret_is_refused(self, test_client, tmp_db, dummy_user):
+        oauth._ensure_tokens_table()
+        client = oauth.create_service_client("mcp-proxy", dummy_user)
+
+        r = test_client.post("/oauth/token", data={
+            "grant_type": "client_credentials",
+            "client_id": client["client_id"], "client_secret": "wrong",
+        })
+
+        assert r.status_code == 401
+        assert r.json()["error"] == "invalid_client"
+
+    def test_an_unknown_client_is_refused(self, test_client, tmp_db):
+        oauth._ensure_tokens_table()
+        r = test_client.post("/oauth/token", data={
+            "grant_type": "client_credentials", "client_id": "nope", "client_secret": "nope",
+        })
+        assert r.status_code == 401
+
+    def test_client_secret_basic_works_too(self, test_client, tmp_db, dummy_user):
+        # The extension requires the metadata to advertise at least one of
+        # private_key_jwt / client_secret_basic; this server advertises the
+        # latter, so it has to actually accept it here.
+        import base64
+
+        oauth._ensure_tokens_table()
+        client = oauth.create_service_client("mcp-proxy", dummy_user)
+        creds = base64.b64encode(f"{client['client_id']}:{client['client_secret']}".encode()).decode()
+
+        r = test_client.post(
+            "/oauth/token", data={"grant_type": "client_credentials"},
+            headers={"Authorization": f"Basic {creds}"},
+        )
+
+        assert r.status_code == 200
+
+    def test_no_refresh_token_is_issued(self, test_client, tmp_db, dummy_user):
+        # RFC 6749 §4.4.3 — a client that can re-authenticate at will has
+        # nothing to refresh, and issuing one would only create a long-lived
+        # credential to look after.
+        oauth._ensure_tokens_table()
+        client = oauth.create_service_client("mcp-proxy", dummy_user)
+
+        r = test_client.post("/oauth/token", data={
+            "grant_type": "client_credentials",
+            "client_id": client["client_id"], "client_secret": client["client_secret"],
+        })
+
+        assert "refresh_token" not in r.json()
+
+    def test_the_token_is_accepted_by_verify_token_as_the_service_user(self, test_client, tmp_db, dummy_user):
+        import asyncio
+
+        from auth import verify_token as _verify
+
+        oauth._ensure_tokens_table()
+        client = oauth.create_service_client("mcp-proxy", dummy_user)
+        r = test_client.post("/oauth/token", data={
+            "grant_type": "client_credentials",
+            "client_id": client["client_id"], "client_secret": client["client_secret"],
+        })
+
+        assert asyncio.run(_verify(r.json()["access_token"]))["username"] == dummy_user
+
+    def test_the_token_is_active_so_mcp_would_accept_it(self, tmp_db, dummy_user, test_client):
+        # main.handle_mcp checks is_token_active on top of the signature, so a
+        # token that verifies but was never recorded would 401 on every call.
+        oauth._ensure_tokens_table()
+        client = oauth.create_service_client("mcp-proxy", dummy_user)
+        r = test_client.post("/oauth/token", data={
+            "grant_type": "client_credentials",
+            "client_id": client["client_id"], "client_secret": client["client_secret"],
+        })
+
+        assert is_token_active(r.json()["access_token"])
+
+    def test_a_service_client_needs_an_existing_user(self, tmp_db):
+        # The identity and teams on the token come from a real account; a
+        # machine client is a way to authenticate as one without a password
+        # prompt, not a way to invent one no authorization check knows about.
+        oauth._ensure_tokens_table()
+        with pytest.raises(ValueError):
+            oauth.create_service_client("mcp-proxy", "nobody-here")
+
+    def test_registration_never_marks_a_client_as_a_service_client(self, test_client, tmp_db):
+        oauth._ensure_tokens_table()
+        r = test_client.post("/oauth/clients/register", json={"client_name": "app", "redirect_uris": []})
+        client_id = r.json()["client_id"]
+
+        assert oauth.oauth_clients[client_id]["service_username"] == ""
+
+    def test_a_service_client_survives_a_restart(self, tmp_db, dummy_user):
+        # load_clients_from_db repopulates the in-memory dict at startup; if
+        # service_username were dropped there, every machine client would
+        # quietly stop working after a restart.
+        oauth._ensure_tokens_table()
+        client = oauth.create_service_client("mcp-proxy", dummy_user)
+        oauth_clients.clear()
+
+        load_clients_from_db()
+
+        assert oauth_clients[client["client_id"]]["service_username"] == dummy_user
 
 
 class TestOauthTokenRefreshGrantCimdClient:

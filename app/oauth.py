@@ -96,6 +96,15 @@ def _ensure_tokens_table():
         conn.execute("ALTER TABLE oauth_clients ADD COLUMN application_type TEXT DEFAULT 'web'")
     except sqlite3.OperationalError:
         pass  # column already exists
+    try:
+        # Non-empty only for a client provisioned deliberately as a machine
+        # client (create_service_client) — the identity its tokens are issued
+        # for. Registration through DCR never sets it, which is what stops
+        # the client_credentials grant from being reachable by anyone who can
+        # POST to /oauth/clients/register. See that grant in oauth_token().
+        conn.execute("ALTER TABLE oauth_clients ADD COLUMN service_username TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass  # column already exists
     conn.execute("""CREATE TABLE IF NOT EXISTS refresh_tokens (
         token TEXT PRIMARY KEY,
         username TEXT,
@@ -110,14 +119,15 @@ def load_clients_from_db():
     try:
         conn = db.connect(DB_PATH)
         rows = conn.execute(
-            "SELECT client_id, client_secret, name, redirect_uris, application_type FROM oauth_clients"
+            "SELECT client_id, client_secret, name, redirect_uris, application_type, service_username FROM oauth_clients"
         ).fetchall()
-        for client_id, client_secret, name, redirect_uris, application_type in rows:
+        for client_id, client_secret, name, redirect_uris, application_type, service_username in rows:
             oauth_clients[client_id] = {
                 "client_secret": client_secret,
                 "name": name,
                 "redirect_uris": json.loads(redirect_uris or "[]"),
                 "application_type": application_type or "web",
+                "service_username": service_username or "",
             }
         logger.info(f"Loaded {len(rows)} OAuth client(s) from DB")
     except Exception as e:
@@ -131,20 +141,63 @@ def create_oauth_client(name: str, redirect_uris: list = None, application_type:
     clients that send it (as the spec now requires) get a clean registration
     instead of the field being silently dropped."""
     application_type = "native" if application_type == "native" else "web"
+    return _insert_client(name, redirect_uris or [], application_type, service_username="")
+
+
+def create_service_client(name: str, service_username: str) -> dict:
+    """A machine client: one that authenticates as itself and gets tokens for
+    `service_username`, with no browser and no user at the keyboard. This is
+    what the client_credentials grant in oauth_token() below serves, and the
+    only way to get a client it will accept.
+
+    Deliberately not reachable over HTTP. /oauth/clients/register is
+    unauthenticated by design (RFC 7591 — it is how an MCP client registers
+    itself), so if the grant accepted any registered client, anyone able to
+    reach that endpoint could register one and mint an access token for /mcp
+    without ever logging in. The MCP client-credentials extension says the
+    same in one line — "Dynamic Client Registration is not used in this
+    flow" — and this split is what enforces it here: DCR leaves
+    service_username empty, and only an operator running the CLI sets it.
+
+    `service_username` must already exist as a user, because that is where
+    the token's identity and teams come from (issue_token reads them) — a
+    machine client is a way to *authenticate as* an account without a
+    password prompt, not a way to invent an account that no authorization
+    check knows about.
+    """
+    from users import get_user
+
+    if not get_user(service_username):
+        raise ValueError(f"No such user: {service_username!r} — create it first (mcp-adduser).")
+    return _insert_client(name, [], "web", service_username=service_username)
+
+
+def _insert_client(name: str, redirect_uris: list, application_type: str, *, service_username: str) -> dict:
     client_id = secrets.token_urlsafe(16)
     client_secret = secrets.token_urlsafe(32)
     now = time.time()
-    uris = redirect_uris or []
     conn = db.connect(DB_PATH)
-    conn.execute("INSERT INTO oauth_clients VALUES (?,?,?,?,?,?)",
-                 (client_id, client_secret, name, json.dumps(uris), application_type, now))
+    # Columns named rather than positional: application_type and
+    # service_username both arrive via ALTER TABLE, which appends them, so a
+    # database migrated from an older schema has them in a different physical
+    # order than one created fresh. A positional INSERT is silently wrong on
+    # exactly one of the two.
+    conn.execute(
+        "INSERT INTO oauth_clients"
+        " (client_id, client_secret, name, redirect_uris, application_type, created_at, service_username)"
+        " VALUES (?,?,?,?,?,?,?)",
+        (client_id, client_secret, name, json.dumps(redirect_uris), application_type, now, service_username),
+    )
     conn.commit()
     oauth_clients[client_id] = {
-        "client_secret": client_secret, "name": name, "redirect_uris": uris,
-        "application_type": application_type,
+        "client_secret": client_secret, "name": name, "redirect_uris": redirect_uris,
+        "application_type": application_type, "service_username": service_username,
     }
     logger.info(f"Created OAuth client: {name} ({client_id})")
-    return {"client_id": client_id, "client_secret": client_secret, "name": name, "application_type": application_type}
+    return {
+        "client_id": client_id, "client_secret": client_secret, "name": name,
+        "application_type": application_type, "service_username": service_username,
+    }
 
 
 def _redirect_uri_valid(client_id: str, redirect_uri: str) -> bool:
@@ -526,7 +579,7 @@ async def oauth_metadata(request: Request) -> JSONResponse:
         "token_endpoint": f"{SERVER_URL}/oauth/token",
         "registration_endpoint": f"{SERVER_URL}/oauth/clients/register",
         "response_types_supported": ["code"],
-        "grant_types_supported": ["authorization_code", "refresh_token"],
+        "grant_types_supported": ["authorization_code", "refresh_token", "client_credentials"],
         "code_challenge_methods_supported": ["S256"],
         "token_endpoint_auth_methods_supported": ["client_secret_post", "client_secret_basic", "none"],
         "scopes_supported": [MCP_SCOPE],
@@ -800,6 +853,57 @@ async def oauth_token(request: Request) -> JSONResponse:
             {"error": "invalid_target", "error_description": f"resource must be {MCP_RESOURCE_URI}"},
             status_code=400,
         )
+
+    if grant_type == "client_credentials":
+        # RFC 6749 §4.4, kept in OAuth 2.1, and shaped by the MCP
+        # client-credentials extension (draft): machine-to-machine, no user
+        # at a browser. What it exists for here is a service that has to call
+        # this server on its own — an MCP proxy fronting several instances,
+        # a scheduled job — where the authorization-code flow's login form
+        # has nobody to show itself to.
+        #
+        # The check that matters is service_username, not the secret. Client
+        # registration is unauthenticated by design (RFC 7591; it is how an
+        # MCP client onboards itself), so accepting any registered client
+        # here would mean anyone able to POST to /oauth/clients/register
+        # could mint a token for /mcp without ever logging in. DCR leaves
+        # service_username empty and only create_service_client sets it,
+        # which is this server's enforcement of the extension's own line
+        # that "Dynamic Client Registration is not used in this flow".
+        client = oauth_clients.get(client_id)
+        if not client or not secrets.compare_digest(client_secret, client["client_secret"]):
+            logger.warning("OAuth client_credentials rejected: client authentication failed")
+            return JSONResponse(
+                {"error": "invalid_client", "error_description": "Client authentication failed"},
+                status_code=401,
+            )
+        username = client.get("service_username") or ""
+        if not username:
+            logger.warning("OAuth client_credentials rejected: client is not a service client")
+            return JSONResponse(
+                {
+                    "error": "unauthorized_client",
+                    "error_description": "This client may not use the client_credentials grant.",
+                },
+                status_code=400,
+            )
+        # Deliberately names nobody: `username` is read back out of the
+        # oauth_clients entry, which also holds client_secret, so CodeQL
+        # over-taints the whole lookup as sensitive. a9ada80 met the same
+        # flag in issue_token() and answered it by dropping the value from
+        # the line rather than suppressing — the client record still says
+        # who this was, so nothing diagnosable is actually lost.
+        logger.info("Access token issued to a service client")
+        # No refresh_token, per RFC 6749 §4.4.3 — a client that can
+        # authenticate whenever it likes has nothing to refresh, and issuing
+        # one would only create a long-lived credential to look after. It
+        # also keeps this path clear of the rotation logic above entirely.
+        return JSONResponse({
+            "access_token": issue_token(username),
+            "token_type": "bearer",
+            "expires_in": int(60 * ACCESS_TOKEN_EXPIRE_MINUTES),
+            "scope": MCP_SCOPE,
+        })
 
     if grant_type == "refresh_token":
         if not refresh_token_in:

@@ -51,7 +51,11 @@ generated secrets, default users, etc. as yours to secure per-deployment).
   without approval. That's fine for "add this as a personal MCP
   connector" use, but production deployments serving untrusted clients
   may want an allowlist, admin approval, or a trusted-client policy in
-  front of it.
+  front of it. Note this is exactly why the `client_credentials` grant
+  refuses a self-registered client: open registration plus a
+  machine-to-machine grant would be an unauthenticated path to a `/mcp`
+  token. Only a client provisioned at the CLI (`--add-service-client`,
+  which sets `service_username`) may use it.
 - Client ID Metadata Documents (CIMD) are trusted on first fetch and
   cached in-memory only (`_cimd_cache` in `app/oauth.py`) — same
   cross-process caveat as above. `_host_is_public` blocks fetches to

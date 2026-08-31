@@ -29,7 +29,7 @@ prove the auth chain works end to end. Your actual tools go in `app/server.py`.
 | File | What it does |
 |---|---|
 | `app/main.py` | Starlette app, `/mcp` endpoint + auth gate, lifespan, CLI (`--setup`, `--adduser`) |
-| `app/oauth.py` | Full OAuth 2.0 flow: discovery, client registration (CIMD + DCR), authorize/login/token (+ refresh grant with rotation), revocation, rate limiting |
+| `app/oauth.py` | Full OAuth 2.0 flow: discovery, client registration (CIMD + DCR), authorize/login/token (+ refresh grant with rotation, + client_credentials for machine clients), revocation, rate limiting |
 | `app/auth.py` | JWT verification (signature, expiry, audience) |
 | `app/users.py` | User accounts (argon2 password hashing), login attempt + tool-call audit logging |
 | `app/context.py` | `ContextVar` carrying the authenticated user into your tool handlers |
@@ -65,6 +65,41 @@ binding to that `client_id`: a token is redeemable only by the client it was
 issued to, and rotation above is what limits a stolen one. Requiring a secret
 from a public client instead would let it connect and then fail every refresh
 from that point on.
+
+## Machine clients (`client_credentials`)
+
+Both flows above assume a person at a browser. A service that has to call
+this server on its own — an MCP proxy fronting several instances, a
+scheduled job — has nobody to show a login form to, so it uses
+`grant_type=client_credentials` (RFC 6749 §4.4, kept in OAuth 2.1, shaped
+by the MCP client-credentials extension). No refresh token comes back:
+a client that can re-authenticate whenever it likes has nothing to
+refresh, and issuing one would only create a long-lived credential to
+look after.
+
+The grant is **not** open to clients that registered themselves.
+`/oauth/clients/register` is unauthenticated by design — that is how an
+MCP client onboards — so if any registered client could use this grant,
+anyone able to POST there would mint an access token for `/mcp` without
+ever logging in. A machine client is instead provisioned deliberately:
+
+```bash
+python -m app.main --add-service-client
+```
+
+which asks what is calling and which existing user it acts as, then
+prints a `client_id`/`client_secret` once. Only clients created this way
+carry a `service_username`, and only those are accepted by the grant —
+this server's enforcement of the extension's own line that "Dynamic
+Client Registration is not used in this flow". The token's identity and
+teams come from that user, so a machine client authenticates *as* an
+account rather than inventing one no authorization check knows about.
+
+The access token also carries an `aud` claim set to this server's canonical
+URI, and `/oauth/authorize`/`/oauth/token` validate an optional `resource`
+parameter (RFC 8707) against it — so a token minted here can't be replayed
+against a different resource server even if it somehow shared your
+`SECRET_KEY`.
 
 The access token also carries an `aud` claim set to this server's canonical
 URI, and `/oauth/authorize`/`/oauth/token` validate an optional `resource`

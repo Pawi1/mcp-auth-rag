@@ -243,6 +243,45 @@ def run_setup_wizard():
     print("\nSetup complete. Start with: python -m app.main\n")
 
 
+def run_addserviceclient():
+    """`python -m app.main --add-service-client` — provision a machine client
+    for the client_credentials grant.
+
+    Deliberately a CLI step and not an HTTP endpoint: see
+    oauth.create_service_client for why granting this over the open
+    registration endpoint would hand out /mcp access to anyone who asked.
+
+    The secret is printed once and never again — only its value is stored,
+    and there is nothing here that can show it a second time, same as any
+    other credential this project mints.
+    """
+    from config import DB_PATH
+    from oauth import _ensure_tokens_table, create_service_client
+
+    _ensure_tokens_table()
+    print(f"\nAdd a machine (client_credentials) client to {DB_PATH}")
+    name = input("Client name (what is calling, e.g. 'mcp-proxy'): ").strip()
+    username = input("Acts as which existing user: ").strip()
+    if not name or not username:
+        print("Aborted.")
+        return
+    try:
+        client = create_service_client(name, username)
+    except ValueError as e:
+        print(f"{e}")
+        return
+    # codeql[py/clear-text-logging-sensitive-data] — one-time stdout display to
+    # the operator running this command, not a log file/aggregator; only the
+    # secret's value is stored, so showing it once here is the only moment it
+    # can be captured at all. Same "shown once, never persisted in plaintext
+    # again" pattern installer.py's generated-password display already uses —
+    # see docs/security.md.
+    print("\n✓ Created. Store these now — the secret is not recoverable:")
+    print(f"  client_id:     {client['client_id']}")
+    print(f"  client_secret: {client['client_secret']}")
+    print(f"  acts as:       {client['service_username']}")
+
+
 def run_adduser():
     """`python -m app.main --adduser` — create or reset a user without the full wizard."""
     from users import create_user, get_user, hash_password, _ensure_db_schema as _schema
@@ -291,6 +330,9 @@ if __name__ == "__main__":
         sys.exit(0)
     if "--adduser" in sys.argv:
         run_adduser()
+        sys.exit(0)
+    if "--add-service-client" in sys.argv:
+        run_addserviceclient()
         sys.exit(0)
     startup_checks()
     logger.info(f"🚀 {MCP_SERVER_NAME} | http://{MCP_HOST}:{MCP_PORT}/mcp")
