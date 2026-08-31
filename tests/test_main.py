@@ -16,12 +16,16 @@ SECRET_KEY = config.SECRET_KEY
 ALGORITHM = config.ALGORITHM
 
 
-def _make_token(username="alice", teams=None, exp_delta=86400):
-    return pyjwt.encode(
-        {"sub": username, "teams": teams if teams is not None else ["admins"],
-         "aud": config.MCP_RESOURCE_URI, "exp": int(time.time()) + exp_delta},
-        SECRET_KEY, algorithm=ALGORITHM,
-    )
+def _make_token(username="alice", teams=None, exp_delta=86400, svc=""):
+    claims = {
+        "sub": username,
+        "teams": teams if teams is not None else ["admins"],
+        "aud": config.MCP_RESOURCE_URI,
+        "exp": int(time.time()) + exp_delta,
+    }
+    if svc:
+        claims["svc"] = svc
+    return pyjwt.encode(claims, SECRET_KEY, algorithm=ALGORITHM)
 
 
 @pytest.fixture(autouse=True)
@@ -120,6 +124,76 @@ class TestHandleMcpAuth:
 
         resp = client.post("/mcp", params={"token": token})
         assert resp.status_code == 401
+
+
+class TestActingOnBehalfOf:
+    """X-MCP-Actor lets a service client say which person a call is really
+    for, so an audit trail downstream records them and not the machine
+    account the proxy authenticates as. The gate is the `svc` claim, which
+    only the client_credentials grant puts on a token — every test here is
+    about that gate holding.
+    """
+
+    def _seen_user(self, client, tmp_db, token, headers=None):
+        from context import current_user
+
+        seen = {}
+
+        async def _capture(scope, receive, send):
+            seen["user"] = current_user.get()
+            await _fake_handle_request(scope, receive, send)
+
+        _register_token(tmp_db, token)
+        with patch.object(main.session_manager, "handle_request", side_effect=_capture):
+            resp = client.post("/mcp", headers={"Authorization": f"Bearer {token}", **(headers or {})})
+        assert resp.status_code == 200
+        return seen["user"]
+
+    def test_a_service_token_may_name_who_it_acts_for(self, client, tmp_db):
+        user = self._seen_user(
+            client, tmp_db, _make_token(username="svc-proxy", svc="mcp-proxy"),
+            {"X-MCP-Actor": "pawel"},
+        )
+        assert user["on_behalf_of"] == "pawel"
+        assert user["username"] == "svc-proxy"  # authorization is still the service account's
+
+    def test_an_ordinary_token_may_not(self, client, tmp_db):
+        # The impersonation case. A user token carries no `svc` claim, so the
+        # header is ignored entirely rather than trusted.
+        user = self._seen_user(
+            client, tmp_db, _make_token(username="alice"), {"X-MCP-Actor": "someone-else"},
+        )
+        assert not user.get("on_behalf_of")
+        assert user["username"] == "alice"
+
+    def test_a_service_token_without_the_header_acts_as_itself(self, client, tmp_db):
+        user = self._seen_user(client, tmp_db, _make_token(username="svc-proxy", svc="mcp-proxy"))
+        assert not user.get("on_behalf_of")
+
+    def test_a_percent_encoded_name_survives(self, client, tmp_db):
+        # An HTTP header cannot carry a non-ASCII name raw, so the proxy
+        # encodes it and this end has to decode it back.
+        user = self._seen_user(
+            client, tmp_db, _make_token(username="svc-proxy", svc="mcp-proxy"),
+            {"X-MCP-Actor": "pawe%C5%82"},
+        )
+        assert user["on_behalf_of"] == "pawe\u0142"
+
+    def test_control_characters_are_stripped(self, client, tmp_db):
+        # A newline here could split a log line or a downstream header.
+        user = self._seen_user(
+            client, tmp_db, _make_token(username="svc-proxy", svc="mcp-proxy"),
+            {"X-MCP-Actor": "pawel%0AX-Injected%3A%20yes"},
+        )
+        assert "\n" not in user["on_behalf_of"]
+        assert user["on_behalf_of"].startswith("pawel")
+
+    def test_an_overlong_name_is_capped(self, client, tmp_db):
+        user = self._seen_user(
+            client, tmp_db, _make_token(username="svc-proxy", svc="mcp-proxy"),
+            {"X-MCP-Actor": "a" * 500},
+        )
+        assert len(user["on_behalf_of"]) == main.MAX_ACTOR_LEN
 
 
 class TestHealth:

@@ -140,6 +140,28 @@ Authorization responses also now carry an `iss`
 parameter (RFC 9207), so a client talking to more than one authorization
 server can tell them apart.
 
+## Acting on behalf of someone (`X-MCP-Actor`)
+
+A machine client authenticates as an account, not as a person — which is a
+problem the moment one sits between a person and this server, as a proxy
+does. Everything it forwards would be recorded as its own service account,
+and any audit trail downstream would answer "which service wrote this"
+instead of "who asked for it".
+
+So a service client may name the person a call is really for, by sending
+`X-MCP-Actor: <username>` (percent-encoded — an HTTP header cannot carry a
+non-ASCII name raw). It lands in `context.current_user` as `on_behalf_of`,
+for whatever this server forwards to next.
+
+The header is honoured **only** on a token carrying the `svc` claim, which
+only the `client_credentials` grant puts there. A token minted through the
+login flow cannot carry it, so an ordinary user sending this header is
+ignored rather than believed — otherwise it would be a way for anyone to
+write as anyone. Authorization is unaffected either way: the request is
+still authorized as the service account, and `on_behalf_of` is a statement
+about *why*, not a grant of that person's rights.
+
+
 ## Quick start
 
 ```bash

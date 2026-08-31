@@ -14,6 +14,7 @@ import asyncio
 import contextlib
 import logging
 import sys
+import urllib.parse
 from collections.abc import AsyncIterator
 
 import uvicorn
@@ -54,6 +55,27 @@ class _NullResponse:
         pass
 
 
+# Matches the width of the column a downstream service is likely to store
+# this in, and keeps a hostile value from being unbounded either way.
+MAX_ACTOR_LEN = 150
+
+
+def _requested_actor(request: Request) -> str:
+    """The end user a service client says it is acting for, from X-MCP-Actor.
+
+    Percent-decoded, because the header must survive a non-ASCII username and
+    an HTTP header cannot carry one raw. Non-printable characters are dropped
+    rather than the value rejected: this is informational, so a mangled name
+    is worth recording as best it can be read, while a newline in it could
+    split a log line or a downstream header.
+    """
+    raw = request.headers.get("X-MCP-Actor", "")
+    if not raw:
+        return ""
+    value = urllib.parse.unquote(raw)
+    return "".join(ch for ch in value if ch.isprintable())[:MAX_ACTOR_LEN].strip()
+
+
 async def handle_mcp(request: Request):
     """POST/GET/DELETE /mcp — the actual MCP protocol endpoint.
 
@@ -92,8 +114,24 @@ async def handle_mcp(request: Request):
         logger.warning(f"MCP {request.method} revoked token from {request.client}")
         return Response(status_code=401, headers={"WWW-Authenticate": 'Bearer error="invalid_token"'})
 
+    # A service token (one minted by client_credentials, carrying `svc`) may
+    # name the person it is acting for; a user token may not, and the claim's
+    # absence is the whole check. Without this, anything reached through a
+    # proxy would be recorded as the proxy's own machine account, and the
+    # audit trail would answer "which service wrote this" instead of "who
+    # asked for it" — the question it exists for. With it, a caller holding
+    # an ordinary token cannot present itself as somebody else, because its
+    # token cannot carry the claim that would let it.
+    if user.get("svc"):
+        on_behalf_of = _requested_actor(request)
+        if on_behalf_of:
+            user = {**user, "on_behalf_of": on_behalf_of}
+            logger.info(
+                f"MCP {request.method} svc={user['svc']} on behalf of {on_behalf_of} from {request.client}"
+            )
     current_user.set(user)
-    logger.info(f"MCP {request.method} user={user['username']} from {request.client}")
+    if not user.get("on_behalf_of"):
+        logger.info(f"MCP {request.method} user={user['username']} from {request.client}")
 
     await session_manager.handle_request(request.scope, request.receive, request._send)
     return _NullResponse()

@@ -46,7 +46,12 @@ async def verify_token(token: str) -> Dict:
             raise ValueError("Invalid token: teams must be array")
 
         logger.debug(f"Token verified for {username}, teams: {teams}")
-        return {"username": username, "teams": teams}
+        # `svc` names the machine client this token was issued to, and is
+        # present only on tokens minted by the client_credentials grant —
+        # see oauth.issue_token. Callers use it to decide whether the request
+        # may name someone it is acting for.
+        return {"username": username, "teams": teams, "svc": payload.get("svc", "")}
+
 
     except PyJWTError as e:
         logger.warning(f"JWT decode error: {str(e)}")

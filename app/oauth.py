@@ -372,9 +372,20 @@ def _parse_basic_auth(header: str) -> tuple:
         return "", ""
 
 
-def issue_token(username: str) -> str:
+def issue_token(username: str, *, service_client: str = "") -> str:
     """Issue a short-lived JWT access token (so verify_token can validate it from
-    Authorization header). Audience-bound to MCP_RESOURCE_URI — see auth.verify_token."""
+    Authorization header). Audience-bound to MCP_RESOURCE_URI — see auth.verify_token.
+
+    `service_client` is set only by the client_credentials grant, and lands in
+    the token as an `svc` claim naming the machine client it was issued to.
+    Nothing about authorization changes: the token still authenticates as
+    `username` and carries that account's teams. What the claim buys is the
+    one thing a service token needs and a user token must never have — the
+    right to say who it is acting for (see handle_mcp's X-MCP-Actor
+    handling). A token minted through the login flow has no `svc` claim and
+    so cannot make that claim at all, which is what stops one user
+    presenting themselves as another.
+    """
     import jwt as pyjwt
     from config import SECRET_KEY, ALGORITHM
     from users import get_user
@@ -384,10 +395,10 @@ def issue_token(username: str) -> str:
 
     now = time.time()
     expires = now + 60 * ACCESS_TOKEN_EXPIRE_MINUTES
-    token = pyjwt.encode(
-        {"sub": username, "teams": teams, "aud": MCP_RESOURCE_URI, "exp": int(expires)},
-        SECRET_KEY, algorithm=ALGORITHM,
-    )
+    claims = {"sub": username, "teams": teams, "aud": MCP_RESOURCE_URI, "exp": int(expires)}
+    if service_client:
+        claims["svc"] = service_client
+    token = pyjwt.encode(claims, SECRET_KEY, algorithm=ALGORITHM)
 
     oauth_tokens[token] = {"issued_at": now, "username": username}
     try:
@@ -899,7 +910,7 @@ async def oauth_token(request: Request) -> JSONResponse:
         # one would only create a long-lived credential to look after. It
         # also keeps this path clear of the rotation logic above entirely.
         return JSONResponse({
-            "access_token": issue_token(username),
+            "access_token": issue_token(username, service_client=client.get("name") or client_id),
             "token_type": "bearer",
             "expires_in": int(60 * ACCESS_TOKEN_EXPIRE_MINUTES),
             "scope": MCP_SCOPE,
