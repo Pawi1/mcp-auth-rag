@@ -18,7 +18,9 @@ from pathlib import Path
 
 import uvicorn
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+from body_limit import BodySizeLimitMiddleware
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Mount, Route
@@ -123,6 +125,9 @@ async def lifespan(app: Starlette) -> AsyncIterator[None]:
 
 app = Starlette(
     lifespan=lifespan,
+    # /mcp carries tool arguments; /rag/documents is the upload route and
+    # enforces RAG_MAX_UPLOAD_MB itself, behind its own session check.
+    middleware=[Middleware(BodySizeLimitMiddleware, exempt_paths=("/mcp", "/rag/documents"))],
     routes=[
         # OAuth 2.0 discovery
         Route("/.well-known/oauth-protected-resource",     endpoint=oauth_protected_resource),
