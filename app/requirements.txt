@@ -1,6 +1,11 @@
 # MCP Auth Starter — runtime dependencies
 
-starlette>=1.0.0
+# 1.3.1 is the first release that applies max_fields to a urlencoded body;
+# before it, request.form() on application/x-www-form-urlencoded parsed
+# however many pairs arrived (DSA-6478-1 / CVE-2026-54282, -54283). Every
+# public form here - the token endpoint, the sign-in pages - has to parse
+# before it can know who is asking, so the floor matters.
+starlette>=1.3.1,<2.0.0
 uvicorn[standard]>=0.47.0
 mcp>=2.0.0,<3.0.0
 
