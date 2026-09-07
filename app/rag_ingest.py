@@ -86,13 +86,20 @@ def parse_pdf(data: bytes) -> tuple[list[Paragraph], int]:
         # page has no text layer — a scanned page/document), cache them, and
         # collect font sizes for the body-size baseline at the same time, so
         # a scanned page is never OCR'd twice.
-        pages_blocks: list[tuple[int, list]] = []
+        pages_blocks: list[tuple[int, list, bool]] = []
         sizes: list[float] = []
         for page_num, page in enumerate(doc, start=1):
             blocks = page.get_text("dict")["blocks"]
-            if not _has_text(blocks):
+            ocr = not _has_text(blocks)
+            if ocr:
                 blocks = _ocr_page_blocks(page)
-            pages_blocks.append((page_num, blocks))
+            pages_blocks.append((page_num, blocks, ocr))
+            if ocr:
+                # an OCR'd span's "size" is derived from its bounding box, not
+                # from font metadata — averaging those into the baseline drags
+                # body_size toward whatever the scan's line height happened to
+                # be, which then mislabels real text-layer pages too.
+                continue
             for block in blocks:
                 for line in block.get("lines", []):
                     for span in line.get("spans", []):
@@ -102,15 +109,26 @@ def parse_pdf(data: bytes) -> tuple[list[Paragraph], int]:
 
         lines: list[Paragraph] = []
         current_heading: Optional[str] = None
-        for page_num, blocks in pages_blocks:
+        for page_num, blocks, ocr in pages_blocks:
             for block in blocks:
                 for line in block.get("lines", []):
                     spans = [s for s in line.get("spans", []) if s["text"].strip()]
                     if not spans:
                         continue
-                    line_text = _clean_text("".join(s["text"] for s in spans).strip())
+                    # OCR emits one span per recognised word with no trailing
+                    # space, so joining those the way text-layer spans are
+                    # joined glues a whole line into one token - unsearchable
+                    # by full-text search and badly embedded.
+                    joiner = " " if ocr else ""
+                    line_text = _clean_text(joiner.join(s["text"] for s in spans).strip())
                     max_size = max(s["size"] for s in spans)
-                    if _looks_like_heading(line_text, max_size, body_size):
+                    # Heading detection is font-size based, and an OCR'd page
+                    # has no real font sizes - every short line reads as a
+                    # heading, so a scanned document ends up with hundreds of
+                    # one-line sections (chunking never crosses a section
+                    # boundary) instead of a few real ones. Carry the last
+                    # heading forward instead of inventing new ones.
+                    if not ocr and _looks_like_heading(line_text, max_size, body_size):
                         current_heading = line_text
                     else:
                         lines.append(Paragraph(page=page_num, heading=current_heading, text=line_text))

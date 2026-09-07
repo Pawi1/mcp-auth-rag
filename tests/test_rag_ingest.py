@@ -286,6 +286,54 @@ class TestOcrFallback:
         assert any("OCRed text" in p.text for p in paragraphs)
         assert calls == [(ri.RAG_OCR_LANGUAGES, ri.RAG_OCR_DPI, True)]
 
+    def _ocr_pdf(self, monkeypatch, blocks):
+        """A one-page PDF with no text layer whose OCR returns `blocks`."""
+        original_get_text = fitz.Page.get_text
+
+        def fake_get_text(self, *args, **kwargs):
+            if kwargs.get("textpage") == "FAKE_TEXTPAGE":
+                return {"blocks": blocks}
+            return original_get_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(fitz.Page, "get_textpage_ocr", lambda self, **kw: "FAKE_TEXTPAGE")
+        monkeypatch.setattr(fitz.Page, "get_text", fake_get_text)
+        doc = fitz.open()
+        doc.new_page()
+        pdf_bytes = doc.tobytes()
+        doc.close()
+        return ri.parse_pdf(pdf_bytes)[0]
+
+    def test_ocr_spans_are_joined_with_spaces(self, monkeypatch):
+        # OCR emits one span per word with no trailing space; joining them the
+        # way text-layer spans are joined glues the line into a single token.
+        blocks = [{"lines": [{"spans": [
+            {"text": "angle-of-arrival", "size": 12.0},
+            {"text": "component", "size": 12.0},
+            {"text": "313", "size": 12.0},
+        ]}]}]
+        paragraphs = self._ocr_pdf(monkeypatch, blocks)
+        assert "angle-of-arrival component 313" in " ".join(p.text for p in paragraphs)
+
+    def test_ocr_page_does_not_invent_headings(self, monkeypatch):
+        # every short line on an OCR'd page looks big-font, so font-size
+        # heading detection would give each line its own section and chunking
+        # (which never crosses a section boundary) would emit one chunk per line
+        blocks = [{"lines": [
+            {"spans": [{"text": "CA(US)", "size": 40.0}]},
+            {"spans": [{"text": "body text follows here", "size": 12.0}]},
+            {"spans": [{"text": "US6,313,794Bl", "size": 40.0}]},
+        ]}]
+        paragraphs = self._ocr_pdf(monkeypatch, blocks)
+        assert {p.heading for p in paragraphs} == {None}
+        assert len(paragraphs) == 1  # all three lines merged into one paragraph
+
+    def test_ocr_sizes_stay_out_of_the_body_size_baseline(self, monkeypatch):
+        # an OCR'd span's "size" comes from its bounding box, so letting it
+        # into the median would drag body_size around for text-layer pages too
+        blocks = [{"lines": [{"spans": [{"text": "scanned line", "size": 99.0}]}]}]
+        self._ocr_pdf(monkeypatch, blocks)  # must not raise; baseline falls back
+        assert ri._looks_like_heading("Real Heading", 14.0, 11.0) is True
+
     def test_ocr_failure_leaves_page_textless_without_crashing(self, monkeypatch):
         def raising_get_textpage_ocr(self, **kwargs):
             raise RuntimeError("tesseract not found")
