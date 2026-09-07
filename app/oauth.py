@@ -1,5 +1,5 @@
 """
-MCP Auth Starter — OAuth 2.0 (RFC 6749 authorization code flow, Client ID
+MCP Auth Starter - OAuth 2.0 (RFC 6749 authorization code flow, Client ID
 Metadata Documents with RFC 7591 Dynamic Client Registration as a fallback
 for client identification, RFC 8414/8707/9728 discovery, RFC 9207 issuer
 validation), enough for Claude.ai and other MCP clients to add this server
@@ -19,13 +19,15 @@ import sqlite3
 import time
 import urllib.parse
 
+import anyio
 import httpx
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
+import db
 from config import (
     SERVER_URL, DB_PATH, REFRESH_TOKEN_EXPIRE_DAYS,
-    ACCESS_TOKEN_EXPIRE_MINUTES, MCP_RESOURCE_URI,
+    ACCESS_TOKEN_EXPIRE_MINUTES, MCP_RESOURCE_URI, MCP_SCOPE,
 )
 from users import verify_user
 
@@ -33,7 +35,7 @@ logger = logging.getLogger("mcp-auth-starter")
 
 oauth_tokens: dict = {}   # token → {issued_at, username}
 oauth_codes: dict = {}    # code → {redirect_uri, state, username, issued_at, client_id, code_challenge}
-oauth_pending: dict = {}  # login_id → {redirect_uri, client_id, state, code_challenge, issued_at, csrf_token} — before login
+oauth_pending: dict = {}  # login_id → {redirect_uri, client_id, state, code_challenge, issued_at, csrf_token} - before login
 oauth_clients: dict = {}  # client_id → {client_secret, name, redirect_uris}
 
 _failed_attempts: dict = {}  # ip → [timestamps of failed logins]
@@ -43,12 +45,17 @@ _AUTH_CODE_TTL = 60          # seconds an authorization code stays redeemable
 _LOGIN_TTL = 600             # seconds a pending login transaction (login_id) stays valid
 _LOGIN_CSRF_COOKIE = "login_csrf"
 
+# argon2 costs ~64ms and 64MiB per hash, so cap how many run at once: the
+# default anyio limiter (40) would allow 2.5GiB of concurrent hashing.
+_MAX_CONCURRENT_HASHES = 8
+_hash_limiter = anyio.CapacityLimiter(_MAX_CONCURRENT_HASHES)
+
 _CIMD_FETCH_TIMEOUT = 5.0     # seconds to wait for a client's metadata document
 _CIMD_MAX_BYTES = 8 * 1024    # the CIMD draft (§6) recommends ~5 KiB; a little headroom for optional fields
 _CIMD_CACHE_TTL_DEFAULT = 300 # seconds, used when the response has no Cache-Control max-age
 _CIMD_CACHE_TTL_MAX = 3600    # cap how long a document is trusted even if max-age asks for longer
 
-# draft §4 — a document MUST NOT claim a shared-secret auth method (a "secret"
+# draft §4 - a document MUST NOT claim a shared-secret auth method (a "secret"
 # published in a document anyone can fetch isn't one)
 _CIMD_FORBIDDEN_AUTH_METHODS = {"client_secret_post", "client_secret_basic", "client_secret_jwt"}
 
@@ -68,7 +75,8 @@ def _record_failed(ip: str) -> None:
 
 
 def _ensure_tokens_table():
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = db.connect(DB_PATH)
+    db.enable_wal(conn)
     conn.execute("""CREATE TABLE IF NOT EXISTS oauth_tokens (
         token TEXT PRIMARY KEY,
         username TEXT,
@@ -88,6 +96,15 @@ def _ensure_tokens_table():
         conn.execute("ALTER TABLE oauth_clients ADD COLUMN application_type TEXT DEFAULT 'web'")
     except sqlite3.OperationalError:
         pass  # column already exists
+    try:
+        # Non-empty only for a client provisioned deliberately as a machine
+        # client (create_service_client) - the identity its tokens are issued
+        # for. Registration through DCR never sets it, which is what stops
+        # the client_credentials grant from being reachable by anyone who can
+        # POST to /oauth/clients/register. See that grant in oauth_token().
+        conn.execute("ALTER TABLE oauth_clients ADD COLUMN service_username TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass  # column already exists
     conn.execute("""CREATE TABLE IF NOT EXISTS refresh_tokens (
         token TEXT PRIMARY KEY,
         username TEXT,
@@ -96,22 +113,21 @@ def _ensure_tokens_table():
         expires_at REAL
     )""")
     conn.commit()
-    conn.close()
 
 
 def load_clients_from_db():
     try:
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = db.connect(DB_PATH)
         rows = conn.execute(
-            "SELECT client_id, client_secret, name, redirect_uris, application_type FROM oauth_clients"
+            "SELECT client_id, client_secret, name, redirect_uris, application_type, service_username FROM oauth_clients"
         ).fetchall()
-        conn.close()
-        for client_id, client_secret, name, redirect_uris, application_type in rows:
+        for client_id, client_secret, name, redirect_uris, application_type, service_username in rows:
             oauth_clients[client_id] = {
                 "client_secret": client_secret,
                 "name": name,
                 "redirect_uris": json.loads(redirect_uris or "[]"),
                 "application_type": application_type or "web",
+                "service_username": service_username or "",
             }
         logger.info(f"Loaded {len(rows)} OAuth client(s) from DB")
     except Exception as e:
@@ -120,26 +136,68 @@ def load_clients_from_db():
 
 def create_oauth_client(name: str, redirect_uris: list = None, application_type: str = "web") -> dict:
     """application_type is OIDC Dynamic Client Registration's native-vs-web hint
-    (SEP-837) — this server isn't an OIDC provider and doesn't enforce any
+    (SEP-837) - this server isn't an OIDC provider and doesn't enforce any
     redirect_uri constraints from it, just stores and echoes it back so MCP
     clients that send it (as the spec now requires) get a clean registration
     instead of the field being silently dropped."""
     application_type = "native" if application_type == "native" else "web"
+    return _insert_client(name, redirect_uris or [], application_type, service_username="")
+
+
+def create_service_client(name: str, service_username: str) -> dict:
+    """A machine client: one that authenticates as itself and gets tokens for
+    `service_username`, with no browser and no user at the keyboard. This is
+    what the client_credentials grant in oauth_token() below serves, and the
+    only way to get a client it will accept.
+
+    Deliberately not reachable over HTTP. /oauth/clients/register is
+    unauthenticated by design (RFC 7591 - it is how an MCP client registers
+    itself), so if the grant accepted any registered client, anyone able to
+    reach that endpoint could register one and mint an access token for /mcp
+    without ever logging in. The MCP client-credentials extension says the
+    same in one line - "Dynamic Client Registration is not used in this
+    flow" - and this split is what enforces it here: DCR leaves
+    service_username empty, and only an operator running the CLI sets it.
+
+    `service_username` must already exist as a user, because that is where
+    the token's identity and teams come from (issue_token reads them) - a
+    machine client is a way to *authenticate as* an account without a
+    password prompt, not a way to invent an account that no authorization
+    check knows about.
+    """
+    from users import get_user
+
+    if not get_user(service_username):
+        raise ValueError(f"No such user: {service_username!r} - create it first (mcp-adduser).")
+    return _insert_client(name, [], "web", service_username=service_username)
+
+
+def _insert_client(name: str, redirect_uris: list, application_type: str, *, service_username: str) -> dict:
     client_id = secrets.token_urlsafe(16)
     client_secret = secrets.token_urlsafe(32)
     now = time.time()
-    uris = redirect_uris or []
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.execute("INSERT INTO oauth_clients VALUES (?,?,?,?,?,?)",
-                 (client_id, client_secret, name, json.dumps(uris), application_type, now))
+    conn = db.connect(DB_PATH)
+    # Columns named rather than positional: application_type and
+    # service_username both arrive via ALTER TABLE, which appends them, so a
+    # database migrated from an older schema has them in a different physical
+    # order than one created fresh. A positional INSERT is silently wrong on
+    # exactly one of the two.
+    conn.execute(
+        "INSERT INTO oauth_clients"
+        " (client_id, client_secret, name, redirect_uris, application_type, created_at, service_username)"
+        " VALUES (?,?,?,?,?,?,?)",
+        (client_id, client_secret, name, json.dumps(redirect_uris), application_type, now, service_username),
+    )
     conn.commit()
-    conn.close()
     oauth_clients[client_id] = {
-        "client_secret": client_secret, "name": name, "redirect_uris": uris,
-        "application_type": application_type,
+        "client_secret": client_secret, "name": name, "redirect_uris": redirect_uris,
+        "application_type": application_type, "service_username": service_username,
     }
     logger.info(f"Created OAuth client: {name} ({client_id})")
-    return {"client_id": client_id, "client_secret": client_secret, "name": name, "application_type": application_type}
+    return {
+        "client_id": client_id, "client_secret": client_secret, "name": name,
+        "application_type": application_type, "service_username": service_username,
+    }
 
 
 _LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]"}
@@ -172,7 +230,7 @@ def _redirect_uri_registered(redirect_uri: str, registered: list) -> bool:
 
 
 def _redirect_uri_valid(client_id: str, redirect_uri: str) -> bool:
-    """RFC 6749 §3.1.2.3 — redirect_uri must match one registered for the client.
+    """RFC 6749 §3.1.2.3 - redirect_uri must match one registered for the client.
 
     An empty redirect_uri is allowed: it means the flow ends with the
     in-browser "signed in" page instead of a redirect, so there's nothing
@@ -188,17 +246,17 @@ _CODE_CHALLENGE_RE = re.compile(r"[A-Za-z0-9\-._~]{43,128}")
 
 
 def _code_challenge_valid(code_challenge: str) -> bool:
-    """RFC 7636 §4.1 — 43-128 chars of unreserved URL-safe charset."""
+    """RFC 7636 §4.1 - 43-128 chars of unreserved URL-safe charset."""
     return bool(code_challenge) and _CODE_CHALLENGE_RE.fullmatch(code_challenge) is not None
 
 
 def _code_verifier_valid(code_verifier: str) -> bool:
-    """RFC 7636 §4.1 — code_verifier follows the same charset/length rule as code_challenge."""
+    """RFC 7636 §4.1 - code_verifier follows the same charset/length rule as code_challenge."""
     return _code_challenge_valid(code_verifier)
 
 
 def _resource_valid(resource: str) -> bool:
-    """RFC 8707 — if a client specifies a target resource, it must be this server's
+    """RFC 8707 - if a client specifies a target resource, it must be this server's
     canonical URI. Absent is allowed (not every client sends it), but a mismatched
     one is rejected outright rather than silently issuing a token for the wrong resource.
     """
@@ -209,7 +267,7 @@ def _is_cimd_client_id(client_id: str) -> bool:
     """A Client ID Metadata Document (draft-ietf-oauth-client-id-metadata-document-00
     §4) names itself with an https URL that has a path component, e.g.
     'https://app.example.com/client.json', and per that section MUST NOT carry a
-    fragment, userinfo, or '.'/'..' path segments — anything else (in particular,
+    fragment, userinfo, or '.'/'..' path segments - anything else (in particular,
     the opaque ids this server hands out via DCR) is not a CIMD client_id.
     """
     try:
@@ -228,7 +286,7 @@ def _is_cimd_client_id(client_id: str) -> bool:
 def _host_is_public(host: str) -> bool:
     """Reject loopback/private/link-local targets before fetching a client-supplied
     metadata URL, so a malicious client_id can't be used to probe internal network
-    services (SSRF — CIMD draft §6.3). Doesn't defend against DNS rebinding between
+    services (SSRF - CIMD draft §6.3). Doesn't defend against DNS rebinding between
     this check and the actual fetch; see SECURITY.md."""
     try:
         infos = socket.getaddrinfo(host, None)
@@ -243,7 +301,7 @@ def _host_is_public(host: str) -> bool:
 
 async def _fetch_cimd_metadata(client_id: str) -> dict | None:
     """Fetch and validate a Client ID Metadata Document for a client_id that's an
-    https URL. Returns None on any fetch or validation failure — callers treat
+    https URL. Returns None on any fetch or validation failure - callers treat
     that the same as an unknown/unregistered client rather than raising.
     """
     cached = _cimd_cache.get(client_id)
@@ -251,13 +309,12 @@ async def _fetch_cimd_metadata(client_id: str) -> dict | None:
         return cached["metadata"]
 
     host = urllib.parse.urlsplit(client_id).hostname or ""
-    if not _host_is_public(host):
+    if not await anyio.to_thread.run_sync(_host_is_public, host):
         logger.warning(f"CIMD fetch blocked: {host!r} does not resolve to a public address")
         return None
 
     try:
-        async with httpx.AsyncClient(follow_redirects=False, timeout=_CIMD_FETCH_TIMEOUT) as http:
-            resp = await http.get(client_id)
+        resp = await get_http_client().get(client_id)
     except httpx.HTTPError as e:
         logger.warning(f"CIMD fetch failed for {client_id!r}: {e}")
         return None
@@ -294,8 +351,31 @@ async def _fetch_cimd_metadata(client_id: str) -> dict | None:
     return metadata
 
 
+_http_client: httpx.AsyncClient | None = None
+
+
+def get_http_client() -> httpx.AsyncClient:
+    """One shared client for CIMD fetches.
+
+    httpx builds an SSL context per client, and loading the system CA bundle
+    costs ~5ms of blocking CPU. Constructing one per fetch spent that on the
+    event loop every time a document was not already cached.
+    """
+    global _http_client
+    if _http_client is None:
+        _http_client = httpx.AsyncClient(follow_redirects=False, timeout=_CIMD_FETCH_TIMEOUT)
+    return _http_client
+
+
+async def close_http_client() -> None:
+    global _http_client
+    if _http_client is not None:
+        await _http_client.aclose()
+        _http_client = None
+
+
 def _pkce_challenge_from_verifier(code_verifier: str) -> str:
-    """RFC 7636 §4.2 — S256 transform of a PKCE code_verifier."""
+    """RFC 7636 §4.2 - S256 transform of a PKCE code_verifier."""
     digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
     return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
 
@@ -321,10 +401,21 @@ def _parse_basic_auth(header: str) -> tuple:
         return "", ""
 
 
-def issue_token(username: str) -> str:
+def issue_token(username: str, *, service_client: str = "") -> str:
     """Issue a short-lived JWT access token (so verify_token can validate it from
-    Authorization header). Audience-bound to MCP_RESOURCE_URI — see auth.verify_token."""
-    from jose import jwt as jose_jwt
+    Authorization header). Audience-bound to MCP_RESOURCE_URI - see auth.verify_token.
+
+    `service_client` is set only by the client_credentials grant, and lands in
+    the token as an `svc` claim naming the machine client it was issued to.
+    Nothing about authorization changes: the token still authenticates as
+    `username` and carries that account's teams. What the claim buys is the
+    one thing a service token needs and a user token must never have - the
+    right to say who it is acting for (see handle_mcp's X-MCP-Actor
+    handling). A token minted through the login flow has no `svc` claim and
+    so cannot make that claim at all, which is what stops one user
+    presenting themselves as another.
+    """
+    import jwt as pyjwt
     from config import SECRET_KEY, ALGORITHM
     from users import get_user
 
@@ -333,18 +424,17 @@ def issue_token(username: str) -> str:
 
     now = time.time()
     expires = now + 60 * ACCESS_TOKEN_EXPIRE_MINUTES
-    token = jose_jwt.encode(
-        {"sub": username, "teams": teams, "aud": MCP_RESOURCE_URI, "exp": int(expires)},
-        SECRET_KEY, algorithm=ALGORITHM,
-    )
+    claims = {"sub": username, "teams": teams, "aud": MCP_RESOURCE_URI, "exp": int(expires)}
+    if service_client:
+        claims["svc"] = service_client
+    token = pyjwt.encode(claims, SECRET_KEY, algorithm=ALGORITHM)
 
     oauth_tokens[token] = {"issued_at": now, "username": username}
     try:
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = db.connect(DB_PATH)
         conn.execute("INSERT OR REPLACE INTO oauth_tokens VALUES (?,?,?,?)",
                      (token, username, now, expires))
         conn.commit()
-        conn.close()
     except Exception as e:
         logger.warning(f"Token DB save failed: {e}")
     logger.info("Token issued")
@@ -352,38 +442,35 @@ def issue_token(username: str) -> str:
 
 
 def issue_refresh_token(username: str, client_id: str = "") -> str:
-    """Issue a long-lived, opaque refresh token (DB-backed, not a JWT — nothing to decode)."""
+    """Issue a long-lived, opaque refresh token (DB-backed, not a JWT - nothing to decode)."""
     token = secrets.token_urlsafe(32)
     now = time.time()
     expires = now + 86400 * REFRESH_TOKEN_EXPIRE_DAYS
     try:
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = db.connect(DB_PATH)
         conn.execute("INSERT OR REPLACE INTO refresh_tokens VALUES (?,?,?,?,?)",
                      (token, username, client_id, now, expires))
         conn.commit()
-        conn.close()
     except Exception as e:
         logger.warning(f"Refresh token DB save failed: {e}")
     return token
 
 
 def redeem_refresh_token(token: str, client_id: str) -> str | None:
-    """Validate a refresh token and consume it (OAuth 2.1 §4.3.1 rotation — one-time
+    """Validate a refresh token and consume it (OAuth 2.1 §4.3.1 rotation - one-time
     use, the caller mints a fresh replacement). Returns the username, or None if the
     token is unknown, expired, or was issued to a different client_id."""
     try:
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = db.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
         row = conn.execute(
             "SELECT username, client_id, expires_at FROM refresh_tokens WHERE token=?", (token,)
         ).fetchone()
         if not row or row["expires_at"] < time.time() or row["client_id"] != client_id:
-            conn.close()
             return None
         username = row["username"]
         conn.execute("DELETE FROM refresh_tokens WHERE token=?", (token,))
         conn.commit()
-        conn.close()
         return username
     except Exception as e:
         logger.warning(f"Refresh token validation error: {e}")
@@ -392,12 +479,11 @@ def redeem_refresh_token(token: str, client_id: str) -> str | None:
 
 def load_tokens_from_db():
     try:
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = db.connect(DB_PATH)
         rows = conn.execute(
             "SELECT token, username, issued_at FROM oauth_tokens WHERE expires_at > ?",
             (time.time(),)
         ).fetchall()
-        conn.close()
         for token, username, issued_at in rows:
             oauth_tokens[token] = {"issued_at": issued_at, "username": username}
         logger.info(f"Loaded {len(rows)} token(s) from DB")
@@ -408,15 +494,14 @@ def load_tokens_from_db():
 def is_token_active(token: str) -> bool:
     """Check if token exists in DB and is not expired (cross-process revocation check)."""
     try:
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = db.connect(DB_PATH)
         row = conn.execute(
             "SELECT 1 FROM oauth_tokens WHERE token=? AND expires_at > ?",
             (token, time.time())
         ).fetchone()
-        conn.close()
         return row is not None
     except Exception:
-        return False  # fail closed on DB error — revoked tokens stay revoked
+        return False  # fail closed on DB error - revoked tokens stay revoked
 
 
 def revoke_tokens_for_user(username: str) -> int:
@@ -425,10 +510,9 @@ def revoke_tokens_for_user(username: str) -> int:
     for t in revoked:
         oauth_tokens.pop(t, None)
     try:
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = db.connect(DB_PATH)
         conn.execute("DELETE FROM oauth_tokens WHERE username=?", (username,))
         conn.commit()
-        conn.close()
     except Exception as e:
         logger.warning(f"Token revocation DB error for '{username}': {e}")
     if revoked:
@@ -444,16 +528,52 @@ def cleanup_expired_tokens() -> int:
     for t in expired:
         oauth_tokens.pop(t, None)
     try:
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = db.connect(DB_PATH)
         conn.execute("DELETE FROM oauth_tokens WHERE expires_at < ?", (now,))
         conn.execute("DELETE FROM refresh_tokens WHERE expires_at < ?", (now,))
         conn.commit()
-        conn.close()
     except Exception as e:
         logger.warning(f"Token cleanup DB error: {e}")
     if expired:
         logger.info(f"Cleaned up {len(expired)} expired token(s)")
     return len(expired)
+
+
+def sweep_expired_state() -> int:
+    """Drop in-memory OAuth state that is no longer usable.
+
+    Each of these dicts is otherwise only pruned when its own key is looked
+    up, so flows that are started and abandoned accumulate for the lifetime
+    of the process. /oauth/authorize needs no authentication, which makes
+    oauth_pending growable by anyone who can reach the server.
+    """
+    now = time.time()
+    dropped = 0
+
+    for login_id, pending in list(oauth_pending.items()):
+        if now - pending["issued_at"] > _LOGIN_TTL:
+            oauth_pending.pop(login_id, None)
+            dropped += 1
+
+    for code, info in list(oauth_codes.items()):
+        if now - info["issued_at"] > _AUTH_CODE_TTL:
+            oauth_codes.pop(code, None)
+            dropped += 1
+
+    for ip, attempts in list(_failed_attempts.items()):
+        fresh = [t for t in attempts if now - t < _RATE_WINDOW]
+        if fresh:
+            _failed_attempts[ip] = fresh
+        else:
+            _failed_attempts.pop(ip, None)
+            dropped += 1
+
+    for client_id, entry in list(_cimd_cache.items()):
+        if entry["expires_at"] <= now:
+            _cimd_cache.pop(client_id, None)
+            dropped += 1
+
+    return dropped
 
 
 def _page(title: str, body: str) -> str:
@@ -483,10 +603,12 @@ def _page(title: str, body: str) -> str:
 # ============================================================================
 
 async def oauth_protected_resource(request: Request) -> JSONResponse:
-    """RFC 8707 — tells clients where the authorization server is"""
+    """RFC 9728 - tells clients where the authorization server is, and which
+    scopes to request when the WWW-Authenticate challenge carries none."""
     return JSONResponse({
         "resource": MCP_RESOURCE_URI,
         "authorization_servers": [SERVER_URL],
+        "scopes_supported": [MCP_SCOPE],
     })
 
 
@@ -497,17 +619,17 @@ async def oauth_metadata(request: Request) -> JSONResponse:
         "token_endpoint": f"{SERVER_URL}/oauth/token",
         "registration_endpoint": f"{SERVER_URL}/oauth/clients/register",
         "response_types_supported": ["code"],
-        "grant_types_supported": ["authorization_code", "refresh_token"],
+        "grant_types_supported": ["authorization_code", "refresh_token", "client_credentials"],
         "code_challenge_methods_supported": ["S256"],
         "token_endpoint_auth_methods_supported": ["client_secret_post", "client_secret_basic", "none"],
-        "scopes_supported": ["mcp"],
+        "scopes_supported": [MCP_SCOPE],
         "client_id_metadata_document_supported": True,
         "authorization_response_iss_parameter_supported": True,
     })
 
 
 async def oauth_clients_register(request: Request) -> JSONResponse:
-    """Dynamic Client Registration — RFC 7591"""
+    """Dynamic Client Registration - RFC 7591"""
     try:
         body = await request.body()
         data = json.loads(body) if body else {}
@@ -517,7 +639,7 @@ async def oauth_clients_register(request: Request) -> JSONResponse:
 
     name = data.get("client_name", "unknown-client")
     redirect_uris = data.get("redirect_uris", [])
-    # OIDC Dynamic Client Registration's native-vs-web hint (SEP-837) — MCP
+    # OIDC Dynamic Client Registration's native-vs-web hint (SEP-837) - MCP
     # clients now MUST send this; omitting it defaults to "web" under OIDC.
     # We're not an OIDC provider so we don't enforce anything from it (a
     # "web" app registering a localhost redirect_uri isn't rejected here),
@@ -542,7 +664,7 @@ async def oauth_clients_register(request: Request) -> JSONResponse:
         "grant_types": ["authorization_code", "refresh_token"],
         "response_types": ["code"],
         "token_endpoint_auth_method": "client_secret_post",
-        "scope": "mcp",
+        "scope": MCP_SCOPE,
     }, status_code=201)
 
 
@@ -594,7 +716,7 @@ async def oauth_authorize(request: Request) -> Response:
             status_code=400,
         )
 
-    # login_id is our own server-side transaction key — state is whatever the
+    # login_id is our own server-side transaction key - state is whatever the
     # client sent (or omitted), just carried through and echoed back to them,
     # never used to look anything up, so two flows sharing a state can't clobber
     # each other's oauth_pending entry. Everything the login flow needs lives
@@ -607,7 +729,7 @@ async def oauth_authorize(request: Request) -> Response:
         "code_challenge": code_challenge, "issued_at": time.time(),
         "csrf_token": csrf_token, "client_name": client_name,
     }
-    # binds the login transaction to the browser that started it — otherwise
+    # binds the login transaction to the browser that started it - otherwise
     # anyone who registers a client (DCR is open) could mint their own
     # login_id, send the bare /oauth/login link to a victim, and get an
     # authorization code for the victim's identity redirected to the
@@ -639,7 +761,7 @@ async def oauth_login(request: Request) -> Response:
     if pending is None:
         return _expired_login_page()
 
-    # so the person logging in can see what they're actually authorizing —
+    # so the person logging in can see what they're actually authorizing -
     # DCR is open and CIMD is self-asserted, so this is the only signal a user
     # gets before their credentials hand an authorization code to whichever app
     # asked for it. Resolved once in oauth_authorize (DCR/pre-registered lookup
@@ -648,7 +770,7 @@ async def oauth_login(request: Request) -> Response:
     redirect_display = _html.escape(pending["redirect_uri"]) if pending["redirect_uri"] else "this page (no redirect)"
 
     # for a CIMD client, client_name is just a string from a JSON document the
-    # client itself hosts — the URL's hostname is the harder-to-fake signal
+    # client itself hosts - the URL's hostname is the harder-to-fake signal
     # (CIMD draft §6.6), so show it alongside the self-reported name
     host_html = ""
     pending_client_id = pending.get("client_id", "")
@@ -709,13 +831,13 @@ async def oauth_login_post(request: Request) -> Response:
             status_code=303,
         )
 
-    ok, _ = verify_user(username, password)
+    ok, _ = await anyio.to_thread.run_sync(verify_user, username, password, limiter=_hash_limiter)
     if not ok:
         _record_failed(ip)
         log_login_attempt(username, ip, success=False, reason="bad_password")
         return RedirectResponse(err_url, status_code=303)
 
-    # only consume the login transaction once it actually succeeds — a bad
+    # only consume the login transaction once it actually succeeds - a bad
     # password shouldn't burn it and force the user to restart the flow
     oauth_pending.pop(login_id, None)
     redirect_uri = pending["redirect_uri"]
@@ -733,7 +855,7 @@ async def oauth_login_post(request: Request) -> Response:
 
     if redirect_uri:
         sep = "&" if "?" in redirect_uri else "?"
-        # RFC 9207 — lets the client tell this response apart from one forged/mixed
+        # RFC 9207 - lets the client tell this response apart from one forged/mixed
         # up with a different authorization server it also talks to
         iss = urllib.parse.quote(SERVER_URL, safe="")
         return RedirectResponse(f"{redirect_uri}{sep}code={code}&state={state}&iss={iss}", status_code=303)
@@ -772,13 +894,64 @@ async def oauth_token(request: Request) -> JSONResponse:
             status_code=400,
         )
 
+    if grant_type == "client_credentials":
+        # RFC 6749 §4.4, kept in OAuth 2.1, and shaped by the MCP
+        # client-credentials extension (draft): machine-to-machine, no user
+        # at a browser. What it exists for here is a service that has to call
+        # this server on its own - an MCP proxy fronting several instances,
+        # a scheduled job - where the authorization-code flow's login form
+        # has nobody to show itself to.
+        #
+        # The check that matters is service_username, not the secret. Client
+        # registration is unauthenticated by design (RFC 7591; it is how an
+        # MCP client onboards itself), so accepting any registered client
+        # here would mean anyone able to POST to /oauth/clients/register
+        # could mint a token for /mcp without ever logging in. DCR leaves
+        # service_username empty and only create_service_client sets it,
+        # which is this server's enforcement of the extension's own line
+        # that "Dynamic Client Registration is not used in this flow".
+        client = oauth_clients.get(client_id)
+        if not client or not secrets.compare_digest(client_secret, client["client_secret"]):
+            logger.warning("OAuth client_credentials rejected: client authentication failed")
+            return JSONResponse(
+                {"error": "invalid_client", "error_description": "Client authentication failed"},
+                status_code=401,
+            )
+        username = client.get("service_username") or ""
+        if not username:
+            logger.warning("OAuth client_credentials rejected: client is not a service client")
+            return JSONResponse(
+                {
+                    "error": "unauthorized_client",
+                    "error_description": "This client may not use the client_credentials grant.",
+                },
+                status_code=400,
+            )
+        # Deliberately names nobody: `username` is read back out of the
+        # oauth_clients entry, which also holds client_secret, so CodeQL
+        # over-taints the whole lookup as sensitive. a9ada80 met the same
+        # flag in issue_token() and answered it by dropping the value from
+        # the line rather than suppressing - the client record still says
+        # who this was, so nothing diagnosable is actually lost.
+        logger.info("Access token issued to a service client")
+        # No refresh_token, per RFC 6749 §4.4.3 - a client that can
+        # authenticate whenever it likes has nothing to refresh, and issuing
+        # one would only create a long-lived credential to look after. It
+        # also keeps this path clear of the rotation logic above entirely.
+        return JSONResponse({
+            "access_token": issue_token(username, service_client=client.get("name") or client_id),
+            "token_type": "bearer",
+            "expires_in": int(60 * ACCESS_TOKEN_EXPIRE_MINUTES),
+            "scope": MCP_SCOPE,
+        })
+
     if grant_type == "refresh_token":
         if not refresh_token_in:
             return JSONResponse(
                 {"error": "invalid_request", "error_description": "Missing refresh_token"},
                 status_code=400,
             )
-        # A CIMD client is public — its client_id is a URL anyone can read and
+        # A CIMD client is public - its client_id is a URL anyone can read and
         # there is no shared secret to present, so it is never in oauth_clients
         # (only DCR registration puts anything there). Demanding one here made
         # every such client authenticate once and then fail every refresh from
@@ -787,7 +960,7 @@ async def oauth_token(request: Request) -> JSONResponse:
         # access-token lifetime later, looking like a random disconnect.
         #
         # What replaces the secret is redeem_refresh_token()'s own client_id
-        # binding, checked immediately below — a refresh token is redeemable
+        # binding, checked immediately below - a refresh token is redeemable
         # only by the client it was issued to. For a public client that does
         # leave the token itself bearer-usable by anyone who has stolen it,
         # which is inherent to public clients (RFC 6749 §10.4); the rotation
@@ -800,7 +973,7 @@ async def oauth_token(request: Request) -> JSONResponse:
                     {"error": "invalid_client", "error_description": "Client authentication failed"},
                     status_code=401,
                 )
-        # one-time use (OAuth 2.1 §4.3.1 rotation) — a reused/expired/unknown
+        # one-time use (OAuth 2.1 §4.3.1 rotation) - a reused/expired/unknown
         # refresh_token, or one issued to a different client, all come back None
         username = redeem_refresh_token(refresh_token_in, client_id)
         if not username:
@@ -815,10 +988,10 @@ async def oauth_token(request: Request) -> JSONResponse:
             "refresh_token": issue_refresh_token(username, client_id),
             "token_type": "bearer",
             "expires_in": int(60 * ACCESS_TOKEN_EXPIRE_MINUTES),
-            "scope": "mcp",
+            "scope": MCP_SCOPE,
         })
 
-    # peek, don't consume yet — a wrong client_secret or code_verifier
+    # peek, don't consume yet - a wrong client_secret or code_verifier
     # shouldn't burn a code that's still legitimately redeemable within its TTL
     info = oauth_codes.get(code)
     if not info or time.time() - info["issued_at"] > _AUTH_CODE_TTL:
@@ -829,10 +1002,10 @@ async def oauth_token(request: Request) -> JSONResponse:
         )
 
     # codes minted for a registered client must be redeemed by that same,
-    # authenticated client — otherwise a leaked code is bearer-usable by anyone
+    # authenticated client - otherwise a leaked code is bearer-usable by anyone
     if info.get("client_id"):
         if _is_cimd_client_id(info["client_id"]):
-            # CIMD clients are public (token_endpoint_auth_method "none" — there's
+            # CIMD clients are public (token_endpoint_auth_method "none" - there's
             # no pre-shared secret, the client_id is just a URL anyone can read).
             # PKCE, checked below, is what actually proves this request came from
             # whoever received the code, same as any other public client.
@@ -873,5 +1046,5 @@ async def oauth_token(request: Request) -> JSONResponse:
         "refresh_token": refresh_token_out,
         "token_type": "bearer",
         "expires_in": int(60 * ACCESS_TOKEN_EXPIRE_MINUTES),
-        "scope": "mcp",
+        "scope": MCP_SCOPE,
     })

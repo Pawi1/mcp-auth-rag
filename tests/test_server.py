@@ -1,4 +1,4 @@
-"""Tests for server.py — the demo `whoami` tool, the RAG tools, and the auth
+"""Tests for server.py - the demo `whoami` tool, the RAG tools, and the auth
 gate in call_tool()."""
 
 import json
@@ -33,17 +33,15 @@ def _result_json(result):
 
 
 class TestToolConsistency:
-    async def test_every_advertised_tool_has_a_dispatch_branch(self):
-        """A cheap regression guard against tool-name drift between list_tools()
-        and call_tool() as you add your own tools."""
-        import inspect
-        import re
-
+    async def test_every_advertised_tool_is_dispatchable(self):
+        """list_tools() and call_tool() both read the same registry, so a tool
+        cannot be advertised without a handler."""
         tools = await server.list_tools()
-        advertised = {t.name for t in tools}
-        source = inspect.getsource(server.call_tool)
-        handled = set(re.findall(r'name == "([^"]+)"', source))
-        assert advertised <= handled
+        assert tools
+        for spec in tools:
+            entry = server._TOOLS.get(spec.name)
+            assert entry is not None
+            assert callable(entry[1])
 
 
 class TestAuthGate:
@@ -179,6 +177,31 @@ class TestRagGetContext:
         result = await server.call_tool("rag_get_context", {"document_id": "doc-1", "ordinal": 3})
         data = _result_json(result)
         assert "error" in data
+
+
+class TestFailingTool:
+    @pytest.fixture
+    def boom(self):
+        @server.tool("boom", "Always raises.")
+        async def _boom(user, arguments):
+            raise RuntimeError("kaboom")
+        yield
+        server._TOOLS.pop("boom", None)
+
+    async def test_handler_exception_returns_error(self, boom, tmp_db):
+        current_user.set({"username": "alice", "teams": []})
+        data = _result_json(await server.call_tool("boom", {}))
+        assert "error" in data
+
+    async def test_handler_exception_is_audited_as_failure(self, boom, tmp_db):
+        current_user.set({"username": "alice", "teams": []})
+        await server.call_tool("boom", {})
+        conn = sqlite3.connect(str(tmp_db))
+        row = conn.execute(
+            "SELECT success, reason FROM tool_call_log WHERE tool_name='boom'"
+        ).fetchone()
+        conn.close()
+        assert row == (0, "error")
 
 
 class TestToolCallAudit:

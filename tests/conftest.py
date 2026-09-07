@@ -13,6 +13,7 @@ _cfg.DB_PATH = Path("/tmp/_test_mcp_auth_starter.db")
 _cfg.REFRESH_TOKEN_EXPIRE_DAYS = 30
 _cfg.ACCESS_TOKEN_EXPIRE_MINUTES = 60
 _cfg.MCP_RESOURCE_URI = "http://localhost:8000/mcp"
+_cfg.MCP_SCOPE = "mcp"
 _cfg.LOG_FILE = Path("/tmp/_test_mcp_auth_starter.log")
 _cfg.MCP_HOST = "0.0.0.0"
 _cfg.MCP_PORT = 8000

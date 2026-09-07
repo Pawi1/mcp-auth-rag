@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
 """
-MCP Auth Starter — Streamable HTTP Transport + OAuth 2.0 (Dynamic Client
+MCP Auth Starter - Streamable HTTP Transport + OAuth 2.0 (Dynamic Client
 Registration) + JWT bearer tokens.
 
 This is the whole point of the repo: a minimal, working example of the auth
 and transport plumbing an MCP server needs to be added as a Claude.ai (or
-any OAuth-aware MCP client) connector with a normal browser login — no
+any OAuth-aware MCP client) connector with a normal browser login - no
 manual token pasting, no bypassing OAuth. Your actual tools live in
 server.py; everything here is generic.
 """
 
+import asyncio
 import contextlib
 import logging
 import sys
+import urllib.parse
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -26,12 +28,12 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from config import LOG_FILE, MCP_HOST, MCP_PORT, MCP_SERVER_NAME, SERVER_URL
+from config import LOG_FILE, MCP_HOST, MCP_PORT, MCP_SCOPE, MCP_SERVER_NAME, SERVER_URL
 from oauth import (
-    _ensure_tokens_table, load_tokens_from_db, load_clients_from_db,
-    oauth_authorize, oauth_login, oauth_login_post,
+    _ensure_tokens_table, cleanup_expired_tokens, load_tokens_from_db,
+    load_clients_from_db, oauth_authorize, oauth_login, oauth_login_post,
     oauth_metadata, oauth_protected_resource, oauth_clients_register,
-    oauth_token,
+    oauth_token, close_http_client, get_http_client, sweep_expired_state,
 )
 import rag_store
 import rag_worker
@@ -40,7 +42,7 @@ from rag_routes import (
     rag_logout, rag_panel, rag_search, rag_upload,
 )
 from server import mcp_server
-from users import _ensure_db_schema
+from users import _ensure_db_schema, prune_login_alerts
 
 
 logging.basicConfig(
@@ -63,8 +65,29 @@ class _NullResponse:
         pass
 
 
+# Matches the width of the column a downstream service is likely to store
+# this in, and keeps a hostile value from being unbounded either way.
+MAX_ACTOR_LEN = 150
+
+
+def _requested_actor(request: Request) -> str:
+    """The end user a service client says it is acting for, from X-MCP-Actor.
+
+    Percent-decoded, because the header must survive a non-ASCII username and
+    an HTTP header cannot carry one raw. Non-printable characters are dropped
+    rather than the value rejected: this is informational, so a mangled name
+    is worth recording as best it can be read, while a newline in it could
+    split a log line or a downstream header.
+    """
+    raw = request.headers.get("X-MCP-Actor", "")
+    if not raw:
+        return ""
+    value = urllib.parse.unquote(raw)
+    return "".join(ch for ch in value if ch.isprintable())[:MAX_ACTOR_LEN].strip()
+
+
 async def handle_mcp(request: Request):
-    """POST/GET/DELETE /mcp — the actual MCP protocol endpoint.
+    """POST/GET/DELETE /mcp - the actual MCP protocol endpoint.
 
     Every request must carry a bearer token (Authorization header) that is
     (a) a validly-signed JWT and (b) still present in the oauth_tokens table
@@ -76,14 +99,16 @@ async def handle_mcp(request: Request):
     from context import current_user
     from oauth import is_token_active
 
-    raw_token = request.headers.get("Authorization", "")[7:]
+    scheme, _, raw_token = request.headers.get("Authorization", "").partition(" ")
+    raw_token = raw_token.strip()
 
-    if not raw_token:
-        logger.info(f"MCP {request.method} 401 (no token) from {request.client}")
+    if scheme.lower() != "bearer" or not raw_token:
+        logger.info(f"MCP {request.method} 401 (no bearer token) from {request.client}")
         return Response(status_code=401, headers={
             "WWW-Authenticate": (
                 f'Bearer realm="{SERVER_URL}/mcp",'
-                f' resource_metadata="{SERVER_URL}/.well-known/oauth-protected-resource"'
+                f' resource_metadata="{SERVER_URL}/.well-known/oauth-protected-resource",'
+                f' scope="{MCP_SCOPE}"'
             )
         })
 
@@ -99,11 +124,41 @@ async def handle_mcp(request: Request):
         logger.warning(f"MCP {request.method} revoked token from {request.client}")
         return Response(status_code=401, headers={"WWW-Authenticate": 'Bearer error="invalid_token"'})
 
+    # A service token (one minted by client_credentials, carrying `svc`) may
+    # name the person it is acting for; a user token may not, and the claim's
+    # absence is the whole check. Without this, anything reached through a
+    # proxy would be recorded as the proxy's own machine account, and the
+    # audit trail would answer "which service wrote this" instead of "who
+    # asked for it" - the question it exists for. With it, a caller holding
+    # an ordinary token cannot present itself as somebody else, because its
+    # token cannot carry the claim that would let it.
+    if user.get("svc"):
+        on_behalf_of = _requested_actor(request)
+        if on_behalf_of:
+            user = {**user, "on_behalf_of": on_behalf_of}
+            logger.info(
+                f"MCP {request.method} svc={user['svc']} on behalf of {on_behalf_of} from {request.client}"
+            )
     current_user.set(user)
-    logger.info(f"MCP {request.method} user={user['username']} from {request.client}")
+    if not user.get("on_behalf_of"):
+        logger.info(f"MCP {request.method} user={user['username']} from {request.client}")
 
     await session_manager.handle_request(request.scope, request.receive, request._send)
     return _NullResponse()
+
+
+CLEANUP_INTERVAL = 60
+
+
+async def _cleanup_loop() -> None:
+    while True:
+        await asyncio.sleep(CLEANUP_INTERVAL)
+        try:
+            sweep_expired_state()
+            cleanup_expired_tokens()
+            prune_login_alerts()
+        except Exception:
+            logger.exception("Cleanup pass failed")
 
 
 @contextlib.asynccontextmanager
@@ -114,13 +169,19 @@ async def lifespan(app: Starlette) -> AsyncIterator[None]:
     load_clients_from_db()
     await rag_store.init_stores()
     rag_worker.start()
-    async with session_manager.run():
-        logger.info("StreamableHTTP session manager running")
-        try:
+    get_http_client()
+    cleanup_task = asyncio.create_task(_cleanup_loop())
+    try:
+        async with session_manager.run():
+            logger.info("StreamableHTTP session manager running")
             yield
-        finally:
-            rag_worker.stop()
-            await rag_store.close_stores()
+    finally:
+        cleanup_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await cleanup_task
+        rag_worker.stop()
+        await rag_store.close_stores()
+        await close_http_client()
 
 
 app = Starlette(
@@ -158,7 +219,7 @@ app = Starlette(
 
 
 # ============================================================================
-# CLI — first-time setup and user management
+# CLI - first-time setup and user management
 # ============================================================================
 
 def _getpass_stars(prompt="Password: ") -> str:
@@ -190,12 +251,12 @@ def _getpass_stars(prompt="Password: ") -> str:
 
 
 def run_setup_wizard():
-    """`python -m app.main --setup` — interactive first-time config bootstrap."""
+    """`python -m app.main --setup` - interactive first-time config bootstrap."""
     import json
     import secrets as _secrets
     from pathlib import Path as _Path
 
-    print("\nMCP Auth Starter — first-time setup")
+    print("\nMCP Auth Starter - first-time setup")
     print("=" * 40)
 
     def ask(prompt, default=""):
@@ -233,7 +294,7 @@ def run_setup_wizard():
         env_path.chmod(0o600)
         print(f"✓ {env_path} (SECRET_KEY pre-generated, chmod 600)")
 
-    from users import _ensure_db_schema as _schema, create_user as _cu, get_user as _gu
+    from users import _ensure_db_schema, prune_login_alerts as _schema, create_user as _cu, get_user as _gu
     _schema()
     print()
     if not _gu("admin"):
@@ -243,13 +304,80 @@ def run_setup_wizard():
             _cu("admin", pw)
             print("✓ admin user created")
         else:
-            print("  Skipped — run: python -m app.main --adduser")
+            print("  Skipped - run: python -m app.main --adduser")
 
     print("\nSetup complete. Start with: python -m app.main\n")
 
 
+def run_addserviceclient(argv=None):
+    """`python -m app.main --add-service-client` - provision a machine client
+    for the client_credentials grant.
+
+    Deliberately a CLI step and not an HTTP endpoint: see
+    oauth.create_service_client for why granting this over the open
+    registration endpoint would hand out /mcp access to anyone who asked.
+
+    Takes --name/--user, and prompts only for what was not given. That split
+    is the point: minting this client is a step in provisioning a whole site,
+    and a script driving that has nobody to answer a prompt. --json makes the
+    output parseable by whatever does the driving; without it the same values
+    are printed for a person to copy.
+
+    The secret is shown once either way. Only its value is stored, so this is
+    the only moment it can be captured at all.
+    """
+    import argparse
+    import json as _json
+
+    from config import DB_PATH
+    from oauth import _ensure_tokens_table, create_service_client
+
+    parser = argparse.ArgumentParser(prog="main.py --add-service-client", add_help=False)
+    parser.add_argument("--add-service-client", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--name", default="", help="What is calling, e.g. 'mcp-proxy'")
+    parser.add_argument("--user", default="", help="Existing user this client acts as")
+    parser.add_argument("--json", action="store_true", help="Print the credentials as JSON")
+    args, _unknown = parser.parse_known_args(sys.argv[1:] if argv is None else argv)
+
+    _ensure_tokens_table()
+    name = args.name.strip()
+    username = args.user.strip()
+    if not (name and username) and not args.json:
+        print(f"\nAdd a machine (client_credentials) client to {DB_PATH}")
+    name = name or input("Client name (what is calling, e.g. 'mcp-proxy'): ").strip()
+    username = username or input("Acts as which existing user: ").strip()
+    if not name or not username:
+        # Non-zero, so a caller that is not a person can tell this failed
+        # rather than reading an empty result as success.
+        print("Both a client name and a user are required.", file=sys.stderr)
+        sys.exit(1)
+    try:
+        client = create_service_client(name, username)
+    except ValueError as e:
+        print(f"{e}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.json:
+        print(_json.dumps({
+            "client_id": client["client_id"],
+            "client_secret": client["client_secret"],
+            "service_username": client["service_username"],
+        }))
+        return
+    # codeql[py/clear-text-logging-sensitive-data] - one-time stdout display to
+    # the operator running this command, not a log file/aggregator; only the
+    # secret's value is stored, so showing it once here is the only moment it
+    # can be captured at all. Same "shown once, never persisted in plaintext
+    # again" pattern installer.py's generated-password display already uses -
+    # see docs/security.md.
+    print("\n✓ Created. Store these now - the secret is not recoverable:")
+    print(f"  client_id:     {client['client_id']}")
+    print(f"  client_secret: {client['client_secret']}")
+    print(f"  acts as:       {client['service_username']}")
+
+
 def run_adduser():
-    """`python -m app.main --adduser` — create or reset a user without the full wizard."""
+    """`python -m app.main --adduser` - create or reset a user without the full wizard."""
     from users import create_user, get_user, hash_password, _ensure_db_schema as _schema
     from config import DB_PATH
 
@@ -263,12 +391,11 @@ def run_adduser():
         if input(f"User '{username}' exists. Reset password? [y/N]: ").strip().lower() != "y":
             print("Aborted.")
             return
-        import sqlite3
+        import db
         pw = _getpass_stars("New password: ")
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = db.connect(DB_PATH)
         conn.execute("UPDATE users SET password_hash=? WHERE username=?", (hash_password(pw), username))
         conn.commit()
-        conn.close()
         print(f"✓ Password updated for '{username}'")
     else:
         pw, pw2 = _getpass_stars("Password: "), _getpass_stars("Confirm: ")
@@ -297,6 +424,9 @@ if __name__ == "__main__":
         sys.exit(0)
     if "--adduser" in sys.argv:
         run_adduser()
+        sys.exit(0)
+    if "--add-service-client" in sys.argv:
+        run_addserviceclient()
         sys.exit(0)
     startup_checks()
     logger.info(f"🚀 {MCP_SERVER_NAME} | http://{MCP_HOST}:{MCP_PORT}/mcp")

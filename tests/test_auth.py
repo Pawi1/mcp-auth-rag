@@ -2,14 +2,15 @@ import base64
 import json
 import time
 
+import jwt
 import pytest
-from jose import jwt
 
 from auth import verify_token
 from config import SECRET_KEY, ALGORITHM, MCP_RESOURCE_URI
 
 
-def _make_token(username="testuser", teams=None, exp_offset=3600, aud=None):
+def _make_token(username="testuser", teams=None, exp_offset=3600, aud=MCP_RESOURCE_URI):
+    """aud defaults to this server; pass aud=None to build one that omits it."""
     if teams is None:
         teams = ["admins"]
     payload = {
@@ -27,7 +28,7 @@ def _b64url(data: dict) -> str:
 
 
 def _make_alg_none_token(username="attacker", teams=None, exp_offset=3600) -> str:
-    """Hand-crafts the classic 'alg: none' attack token — no signature at all,
+    """Hand-crafts the classic 'alg: none' attack token - no signature at all,
     just a header claiming none is needed. verify_token must reject this on
     the strength of the explicit `algorithms=[ALGORITHM]` allowlist passed to
     jwt.decode, not on the (absent) signature."""
@@ -57,13 +58,14 @@ class TestVerifyToken:
             await verify_token(token)
 
     async def test_missing_sub_raises(self):
-        payload = {"teams": ["admins"], "exp": int(time.time()) + 3600}
+        payload = {"teams": ["admins"], "aud": MCP_RESOURCE_URI, "exp": int(time.time()) + 3600}
         token = jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
         with pytest.raises(ValueError, match="missing username"):
             await verify_token(token)
 
     async def test_teams_not_list_raises(self):
-        payload = {"sub": "user", "teams": "admins", "exp": int(time.time()) + 3600}
+        payload = {"sub": "user", "teams": "admins", "aud": MCP_RESOURCE_URI,
+                   "exp": int(time.time()) + 3600}
         token = jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
         with pytest.raises(ValueError, match="teams must be array"):
             await verify_token(token)
@@ -83,21 +85,31 @@ class TestVerifyToken:
 
 
 # ---------------------------------------------------------------------------
-# audience binding (RFC 8707) — see oauth.issue_token / oauth.MCP_RESOURCE_URI
+# audience binding (RFC 8707) - see oauth.issue_token / oauth.MCP_RESOURCE_URI
 # ---------------------------------------------------------------------------
 
 class TestVerifyTokenAudience:
-    async def test_token_without_aud_is_accepted(self):
-        # tokens issued before audience binding existed have no "aud" claim at
-        # all — they must keep working rather than being rejected on upgrade
-        token = _make_token()
-        user = await verify_token(token)
-        assert user["username"] == "testuser"
+    async def test_token_without_aud_is_rejected(self):
+        # issue_token() always sets "aud", so a token missing it did not come
+        # from this server's OAuth flow
+        token = _make_token(aud=None)
+        with pytest.raises(ValueError):
+            await verify_token(token)
 
     async def test_token_with_matching_aud_is_accepted(self):
         token = _make_token(aud=MCP_RESOURCE_URI)
         user = await verify_token(token)
         assert user["username"] == "testuser"
+
+    async def test_token_with_aud_list_containing_this_server_is_accepted(self):
+        token = _make_token(aud=[MCP_RESOURCE_URI, "https://other.example/mcp"])
+        user = await verify_token(token)
+        assert user["username"] == "testuser"
+
+    async def test_token_with_aud_list_excluding_this_server_is_rejected(self):
+        token = _make_token(aud=["https://a.example/mcp", "https://b.example/mcp"])
+        with pytest.raises(ValueError):
+            await verify_token(token)
 
     async def test_token_with_mismatched_aud_is_rejected(self):
         token = _make_token(aud="https://someone-elses-mcp-server.example/mcp")
@@ -106,7 +118,7 @@ class TestVerifyTokenAudience:
 
 
 # ---------------------------------------------------------------------------
-# algorithm confusion — verify_token only trusts ALGORITHM (HS256), never
+# algorithm confusion - verify_token only trusts ALGORITHM (HS256), never
 # whatever algorithm the token's own header claims
 # ---------------------------------------------------------------------------
 
@@ -118,14 +130,14 @@ class TestVerifyTokenAlgorithm:
 
     async def test_alg_none_is_rejected_even_with_admin_claims(self):
         # the interesting case isn't "malformed token" but "otherwise-valid-
-        # looking claims, just unsigned" — this must fail the same way
+        # looking claims, just unsigned" - this must fail the same way
         token = _make_alg_none_token(username="root", teams=["admins", "superuser"])
         with pytest.raises(ValueError):
             await verify_token(token)
 
     async def test_wrong_algorithm_is_rejected(self):
         # signed with the real secret, but a different algorithm than this
-        # server is configured for — jwt.decode's algorithms=[ALGORITHM]
+        # server is configured for - jwt.decode's algorithms=[ALGORITHM]
         # allowlist must reject it regardless of signature validity
         payload = {"sub": "user", "teams": [], "exp": int(time.time()) + 3600}
         token = jwt.encode(payload, SECRET_KEY, algorithm="HS384")

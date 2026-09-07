@@ -1,5 +1,5 @@
 """
-MCP Auth Starter — user accounts, password hashing, login rate-limit signal.
+MCP Auth Starter - user accounts, password hashing, login rate-limit signal.
 """
 
 import logging
@@ -9,11 +9,16 @@ import time
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError, VerificationError, InvalidHashError
 
+import db
 from config import DB_PATH
 
 logger = logging.getLogger("mcp-auth-starter")
 
 _ph = PasswordHasher()
+
+_ANOMALY_WINDOW = 600
+_ALERT_THRESHOLDS = (10, 25, 50)
+_alerted: dict = {}  # ip -> (highest threshold already logged, when)
 
 
 def hash_password(password: str) -> str:
@@ -23,17 +28,17 @@ def hash_password(password: str) -> str:
 def _upgrade_password(username: str, password: str) -> None:
     new_hash = hash_password(password)
     try:
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = db.connect(DB_PATH)
         conn.execute("UPDATE users SET password_hash = ? WHERE username = ?", (new_hash, username))
         conn.commit()
-        conn.close()
         logger.info(f"Password hash upgraded for user: {username}")
     except Exception as e:
         logger.warning(f"Password upgrade failed for {username}: {e}")
 
 
 def _ensure_db_schema():
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = db.connect(DB_PATH)
+    db.enable_wal(conn)
     conn.execute("""CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         username TEXT UNIQUE NOT NULL,
@@ -50,6 +55,7 @@ def _ensure_db_schema():
         success INTEGER NOT NULL DEFAULT 0,
         reason TEXT DEFAULT ''
     )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_login_log_ip_ts ON login_log(ip, ts)")
     conn.execute("""CREATE TABLE IF NOT EXISTS tool_call_log (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         ts REAL NOT NULL,
@@ -59,18 +65,16 @@ def _ensure_db_schema():
         reason TEXT DEFAULT ''
     )""")
     conn.commit()
-    conn.close()
 
 
 def log_login_attempt(username: str, ip: str, success: bool, reason: str = "") -> None:
     try:
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = db.connect(DB_PATH)
         conn.execute(
             "INSERT INTO login_log (ts, username, ip, success, reason) VALUES (?,?,?,?,?)",
             (time.time(), username, ip, int(success), reason)
         )
         conn.commit()
-        conn.close()
     except Exception as e:
         logger.warning(f"login_log write failed: {e}")
 
@@ -80,16 +84,15 @@ def log_login_attempt(username: str, ip: str, success: bool, reason: str = "") -
 
 def log_tool_call(username: str, tool_name: str, success: bool = True, reason: str = "") -> None:
     """Durable, queryable record of who called which tool and whether it was
-    allowed — so 'who ran delete_customer, and when' is a query against
+    allowed - so 'who ran delete_customer, and when' is a query against
     tool_call_log, not a grep through log files after the fact."""
     try:
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = db.connect(DB_PATH)
         conn.execute(
             "INSERT INTO tool_call_log (ts, username, tool_name, success, reason) VALUES (?,?,?,?,?)",
             (time.time(), username, tool_name, int(success), reason)
         )
         conn.commit()
-        conn.close()
     except Exception as e:
         logger.warning(f"tool_call_log write failed: {e}")
 
@@ -97,40 +100,55 @@ def log_tool_call(username: str, tool_name: str, success: bool = True, reason: s
 def _check_login_anomaly(ip: str) -> None:
     """Log a warning if the same IP racks up many failed logins in a short window.
 
-    Wire your own alert channel here (Slack/email/Telegram/whatever) — this
+    Wire your own alert channel here (Slack/email/Telegram/whatever) - this
     just makes the signal visible in the log by default.
     """
     try:
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = db.connect(DB_PATH)
         count = conn.execute(
             "SELECT COUNT(*) FROM login_log WHERE ip=? AND success=0 AND ts>?",
-            (ip, time.time() - 600)
+            (ip, time.time() - _ANOMALY_WINDOW)
         ).fetchone()[0]
-        conn.close()
     except Exception:
         return
 
-    if count in (10, 25, 50):
-        logger.warning(f"Possible brute-force from {ip}: {count} failed logins in the last 10 minutes")
+    # Alert on crossing a threshold, not on landing exactly on it: concurrent
+    # failures make the count jump, and an equality check silently misses those.
+    crossed = max((t for t in _ALERT_THRESHOLDS if count >= t), default=0)
+    if not crossed:
+        _alerted.pop(ip, None)
+        return
+    if crossed <= _alerted.get(ip, (0, 0.0))[0]:
+        return
+
+    _alerted[ip] = (crossed, time.time())
+    logger.warning(f"Possible brute-force from {ip}: {count} failed logins in the last 10 minutes")
+
+
+def prune_login_alerts() -> int:
+    """Drop alert state for IPs whose failure window has elapsed."""
+    cutoff = time.time() - _ANOMALY_WINDOW
+    stale = [ip for ip, (_, when) in list(_alerted.items()) if when < cutoff]
+    for ip in stale:
+        _alerted.pop(ip, None)
+    return len(stale)
 
 
 def get_user(username: str):
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = db.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     row = conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
-    conn.close()
     return dict(row) if row else None
 
 
 def create_user(username: str, password: str, email: str = "") -> bool:
     try:
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = db.connect(DB_PATH)
         conn.execute(
             "INSERT INTO users (username, password_hash, email) VALUES (?, ?, ?)",
             (username, hash_password(password), email or None)
         )
         conn.commit()
-        conn.close()
         return True
     except sqlite3.IntegrityError:
         return False

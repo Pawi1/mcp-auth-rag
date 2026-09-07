@@ -7,6 +7,7 @@ import pytest
 
 from users import (
     _check_login_anomaly,
+    prune_login_alerts,
     _ensure_db_schema,
     _upgrade_password,
     create_user,
@@ -196,6 +197,53 @@ class TestCheckLoginAnomaly:
     def test_bad_db_does_not_raise(self, monkeypatch):
         monkeypatch.setattr("users.DB_PATH", Path("/no/such/db.sqlite"))
         _check_login_anomaly("9.9.9.9")  # must not raise
+
+    def _seed_failures(self, db_path, ip, n):
+        conn = sqlite3.connect(str(db_path))
+        for _ in range(n):
+            conn.execute("INSERT INTO login_log (ts, username, ip, success, reason) VALUES (?,?,?,?,?)",
+                         (time.time(), "u", ip, 0, ""))
+        conn.commit()
+        conn.close()
+
+    def test_threshold_jumped_over_still_alerts(self, tmp_db, caplog):
+        """Concurrent failures make the count skip a threshold; an equality
+        check would never fire."""
+        import users
+        users._alerted.pop("8.8.8.8", None)
+        self._seed_failures(tmp_db, "8.8.8.8", 13)
+        with caplog.at_level("WARNING"):
+            _check_login_anomaly("8.8.8.8")
+        assert "brute-force" in caplog.text.lower()
+
+    def test_does_not_realert_at_same_threshold(self, tmp_db, caplog):
+        import users
+        users._alerted.pop("8.8.8.9", None)
+        self._seed_failures(tmp_db, "8.8.8.9", 11)
+        with caplog.at_level("WARNING"):
+            _check_login_anomaly("8.8.8.9")
+            caplog.clear()
+            _check_login_anomaly("8.8.8.9")
+        assert "brute-force" not in caplog.text.lower()
+
+    def test_realerts_when_next_threshold_crossed(self, tmp_db, caplog):
+        import users
+        users._alerted.pop("8.8.8.10", None)
+        self._seed_failures(tmp_db, "8.8.8.10", 11)
+        with caplog.at_level("WARNING"):
+            _check_login_anomaly("8.8.8.10")
+            self._seed_failures(tmp_db, "8.8.8.10", 15)
+            caplog.clear()
+            _check_login_anomaly("8.8.8.10")
+        assert "brute-force" in caplog.text.lower()
+
+    def test_prune_drops_stale_alert_state(self):
+        import users
+        users._alerted["1.1.1.1"] = (10, time.time() - users._ANOMALY_WINDOW - 1)
+        users._alerted["2.2.2.2"] = (10, time.time())
+        assert prune_login_alerts() == 1
+        assert "1.1.1.1" not in users._alerted
+        assert "2.2.2.2" in users._alerted
 
     def test_at_threshold_logs_warning(self, tmp_db, caplog):
         conn = sqlite3.connect(str(tmp_db))

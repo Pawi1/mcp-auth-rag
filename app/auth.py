@@ -1,11 +1,12 @@
 """
-MCP Auth Starter — JWT verification.
+MCP Auth Starter - JWT verification.
 """
 
 import logging
 from typing import Dict
 
-from jose import jwt, JWTError
+import jwt
+from jwt import PyJWTError
 
 from config import SECRET_KEY, ALGORITHM, MCP_RESOURCE_URI
 
@@ -27,11 +28,12 @@ async def verify_token(token: str) -> Dict:
     Raises: ValueError if token invalid
     """
     try:
-        # audience=MCP_RESOURCE_URI (RFC 8707): tokens carrying an "aud" claim
-        # must match this server's canonical resource URI or are rejected —
-        # tokens with no "aud" at all (pre-existing ones, issued before this
-        # check existed) are left unvalidated on this claim, not rejected.
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM], audience=MCP_RESOURCE_URI)
+        # RFC 8707 / MCP 2026-07-28: the server MUST only accept tokens issued
+        # for it as the audience. Required, not optional - a token omitting
+        # "aud" would otherwise be accepted from any issuer sharing this key.
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM],
+                             audience=MCP_RESOURCE_URI)
+
         username = payload.get("sub")
         teams = payload.get("teams", [])
 
@@ -44,9 +46,14 @@ async def verify_token(token: str) -> Dict:
             raise ValueError("Invalid token: teams must be array")
 
         logger.debug(f"Token verified for {username}, teams: {teams}")
-        return {"username": username, "teams": teams}
+        # `svc` names the machine client this token was issued to, and is
+        # present only on tokens minted by the client_credentials grant -
+        # see oauth.issue_token. Callers use it to decide whether the request
+        # may name someone it is acting for.
+        return {"username": username, "teams": teams, "svc": payload.get("svc", "")}
 
-    except JWTError as e:
+
+    except PyJWTError as e:
         logger.warning(f"JWT decode error: {str(e)}")
         raise ValueError(f"Invalid token: {str(e)}")
     except Exception as e:
