@@ -142,8 +142,37 @@ def create_oauth_client(name: str, redirect_uris: list = None, application_type:
     return {"client_id": client_id, "client_secret": client_secret, "name": name, "application_type": application_type}
 
 
+_LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]"}
+
+
+def _loopback_key(uri: str) -> tuple | None:
+    """(scheme, host, path) for an http loopback URI, or None if it isn't one.
+
+    RFC 8252 §7.3: a native app's loopback redirect listens on an ephemeral
+    port it can't know at registration time, so the authorization server MUST
+    compare loopback redirect URIs ignoring the port. Everything else stays an
+    exact match — the exemption is only safe because nothing but a process on
+    the user's own machine can receive on 127.0.0.1.
+    """
+    try:
+        parsed = urllib.parse.urlsplit(uri)
+    except ValueError:
+        return None
+    if parsed.scheme != "http" or (parsed.hostname or "").lower() not in _LOOPBACK_HOSTS:
+        return None
+    return (parsed.scheme, (parsed.hostname or "").lower(), parsed.path)
+
+
+def _redirect_uri_registered(redirect_uri: str, registered: list) -> bool:
+    """Exact match, except loopback URIs, which match ignoring the port (RFC 8252 §7.3)."""
+    if redirect_uri in registered:
+        return True
+    key = _loopback_key(redirect_uri)
+    return key is not None and any(_loopback_key(r) == key for r in registered)
+
+
 def _redirect_uri_valid(client_id: str, redirect_uri: str) -> bool:
-    """RFC 6749 §3.1.2.3 — redirect_uri must exactly match one registered for the client.
+    """RFC 6749 §3.1.2.3 — redirect_uri must match one registered for the client.
 
     An empty redirect_uri is allowed: it means the flow ends with the
     in-browser "signed in" page instead of a redirect, so there's nothing
@@ -152,7 +181,7 @@ def _redirect_uri_valid(client_id: str, redirect_uri: str) -> bool:
     if not redirect_uri:
         return True
     client = oauth_clients.get(client_id)
-    return bool(client) and redirect_uri in client.get("redirect_uris", [])
+    return bool(client) and _redirect_uri_registered(redirect_uri, client.get("redirect_uris", []))
 
 
 _CODE_CHALLENGE_RE = re.compile(r"[A-Za-z0-9\-._~]{43,128}")
@@ -534,7 +563,7 @@ async def oauth_authorize(request: Request) -> Response:
                 {"error": "invalid_client", "error_description": "Could not fetch or validate the client's metadata document"},
                 status_code=400,
             )
-        if redirect_uri and redirect_uri not in metadata.get("redirect_uris", []):
+        if redirect_uri and not _redirect_uri_registered(redirect_uri, metadata.get("redirect_uris", [])):
             logger.warning(f"OAuth authorize rejected: unregistered redirect_uri for CIMD client_id={client_id!r}")
             return JSONResponse(
                 {"error": "invalid_request", "error_description": "redirect_uri is not registered for this client"},
@@ -749,13 +778,28 @@ async def oauth_token(request: Request) -> JSONResponse:
                 {"error": "invalid_request", "error_description": "Missing refresh_token"},
                 status_code=400,
             )
-        client = oauth_clients.get(client_id)
-        if not client or not secrets.compare_digest(client_secret, client["client_secret"]):
-            logger.warning("OAuth refresh rejected: client authentication failed")
-            return JSONResponse(
-                {"error": "invalid_client", "error_description": "Client authentication failed"},
-                status_code=401,
-            )
+        # A CIMD client is public — its client_id is a URL anyone can read and
+        # there is no shared secret to present, so it is never in oauth_clients
+        # (only DCR registration puts anything there). Demanding one here made
+        # every such client authenticate once and then fail every refresh from
+        # then on: the authorization_code branch below already has this same
+        # exemption, so the initial connection succeeded and only died an
+        # access-token lifetime later, looking like a random disconnect.
+        #
+        # What replaces the secret is redeem_refresh_token()'s own client_id
+        # binding, checked immediately below — a refresh token is redeemable
+        # only by the client it was issued to. For a public client that does
+        # leave the token itself bearer-usable by anyone who has stolen it,
+        # which is inherent to public clients (RFC 6749 §10.4); the rotation
+        # this branch already does is that RFC's own answer to it.
+        if not _is_cimd_client_id(client_id):
+            client = oauth_clients.get(client_id)
+            if not client or not secrets.compare_digest(client_secret, client["client_secret"]):
+                logger.warning("OAuth refresh rejected: client authentication failed")
+                return JSONResponse(
+                    {"error": "invalid_client", "error_description": "Client authentication failed"},
+                    status_code=401,
+                )
         # one-time use (OAuth 2.1 §4.3.1 rotation) — a reused/expired/unknown
         # refresh_token, or one issued to a different client, all come back None
         username = redeem_refresh_token(refresh_token_in, client_id)

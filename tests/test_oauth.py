@@ -763,6 +763,29 @@ class TestOauthAuthorizeCimd:
         assert r.status_code == 400
         assert r.json()["error"] == "invalid_request"
 
+    def test_accepts_loopback_redirect_uri_on_any_port(self, test_client, monkeypatch):
+        # RFC 8252 §7.3 — a native app registers "http://localhost/callback" but
+        # listens on an ephemeral port it can't know up front. Claude Code's own
+        # CIMD document is exactly this shape.
+        doc = {"client_id": self.CID, "client_name": "CIMD App", "redirect_uris": ["http://localhost/callback"]}
+        monkeypatch.setattr(oauth, "_fetch_cimd_metadata", AsyncMock(return_value=doc))
+        _, challenge = _pkce_pair()
+        r = test_client.get(
+            f"/oauth/authorize?client_id={self.CID}&redirect_uri=http://localhost:54321/callback"
+            f"&state=xyz&code_challenge={challenge}&code_challenge_method=S256"
+        )
+        assert r.status_code in (302, 303, 307)
+
+    def test_loopback_port_exemption_still_checks_path(self, test_client, monkeypatch):
+        doc = {"client_id": self.CID, "client_name": "CIMD App", "redirect_uris": ["http://localhost/callback"]}
+        monkeypatch.setattr(oauth, "_fetch_cimd_metadata", AsyncMock(return_value=doc))
+        _, challenge = _pkce_pair()
+        r = test_client.get(
+            f"/oauth/authorize?client_id={self.CID}&redirect_uri=http://localhost:54321/stolen"
+            f"&state=xyz&code_challenge={challenge}&code_challenge_method=S256"
+        )
+        assert r.status_code == 400
+
     def test_consent_page_shows_cimd_client_name(self, test_client, monkeypatch):
         doc = {"client_id": self.CID, "client_name": "CIMD App", "redirect_uris": ["https://app.example.com/cb"]}
         monkeypatch.setattr(oauth, "_fetch_cimd_metadata", AsyncMock(return_value=doc))
@@ -869,6 +892,28 @@ class TestOauthAuthorize:
         _, challenge = _pkce_pair()
         r = test_client.get(
             f"/oauth/authorize?client_id={client['client_id']}&redirect_uri=http://evil.example/cb"
+            f"&state=xyz&code_challenge={challenge}&code_challenge_method=S256"
+        )
+        assert r.status_code == 400
+
+    def test_accepts_loopback_redirect_uri_on_any_port(self, test_client, tmp_db):
+        oauth._ensure_tokens_table()
+        client = create_oauth_client("app", ["http://127.0.0.1/cb"])
+        _, challenge = _pkce_pair()
+        r = test_client.get(
+            f"/oauth/authorize?client_id={client['client_id']}&redirect_uri=http://127.0.0.1:41234/cb"
+            f"&state=xyz&code_challenge={challenge}&code_challenge_method=S256"
+        )
+        assert r.status_code in (302, 303, 307)
+
+    def test_port_exemption_does_not_apply_to_non_loopback(self, test_client, tmp_db):
+        # only loopback gets the port-agnostic treatment — anything else would
+        # let a registered https host be matched on an attacker-chosen port
+        oauth._ensure_tokens_table()
+        client = create_oauth_client("app", ["https://app.example.com/cb"])
+        _, challenge = _pkce_pair()
+        r = test_client.get(
+            f"/oauth/authorize?client_id={client['client_id']}&redirect_uri=https://app.example.com:8443/cb"
             f"&state=xyz&code_challenge={challenge}&code_challenge_method=S256"
         )
         assert r.status_code == 400
@@ -1481,3 +1526,110 @@ class TestOauthTokenJsonBody:
         )
         assert r.status_code == 400
         assert r.json()["error"] == "invalid_grant"
+
+
+class TestOauthTokenRefreshGrantCimdClient:
+    """A CIMD client (draft-ietf-oauth-client-id-metadata-document) is public:
+    its client_id is an https URL anyone can fetch and there is no shared
+    secret. It is never in oauth_clients, so requiring one on the refresh
+    grant let such a client connect and then fail every refresh afterwards —
+    a connector that dropped one access-token lifetime after every login.
+    """
+
+    CIMD_ID = "https://claude.ai/oauth/mcp-oauth-client-metadata"
+
+    def test_cimd_client_can_refresh_without_a_client_secret(self, test_client, tmp_db, dummy_user):
+        oauth._ensure_tokens_table()
+        refresh = issue_refresh_token(dummy_user, self.CIMD_ID)
+
+        r = test_client.post("/oauth/token", data={
+            "grant_type": "refresh_token", "refresh_token": refresh,
+            "client_id": self.CIMD_ID,
+        })
+
+        assert r.status_code == 200, r.json()
+        body = r.json()
+        assert body["access_token"]
+        assert body["refresh_token"] != refresh
+
+    def test_cimd_refresh_token_is_still_one_time_use(self, test_client, tmp_db, dummy_user):
+        # the exemption is from the secret check only — rotation, which is what
+        # RFC 6749 §10.4 offers a public client instead, still applies
+        oauth._ensure_tokens_table()
+        refresh = issue_refresh_token(dummy_user, self.CIMD_ID)
+        data = {"grant_type": "refresh_token", "refresh_token": refresh, "client_id": self.CIMD_ID}
+
+        assert test_client.post("/oauth/token", data=data).status_code == 200
+        r2 = test_client.post("/oauth/token", data=data)
+        assert r2.status_code == 400
+        assert r2.json()["error"] == "invalid_grant"
+
+    def test_a_different_cimd_client_id_cannot_redeem_the_token(self, test_client, tmp_db, dummy_user):
+        # skipping the secret check must not make a stolen refresh token usable
+        # by anyone who simply names some other https URL as their client_id
+        oauth._ensure_tokens_table()
+        refresh = issue_refresh_token(dummy_user, self.CIMD_ID)
+
+        r = test_client.post("/oauth/token", data={
+            "grant_type": "refresh_token", "refresh_token": refresh,
+            "client_id": "https://evil.example/client-metadata",
+        })
+
+        assert r.status_code == 400
+        assert r.json()["error"] == "invalid_grant"
+
+    def test_a_cimd_client_id_cannot_redeem_a_dcr_clients_token(self, test_client, tmp_db, dummy_user):
+        # the reverse direction: a token issued to a secret-holding DCR client
+        # must not become redeemable just by claiming to be a public client
+        oauth._ensure_tokens_table()
+        owner = create_oauth_client("owner-app", ["http://localhost/cb"])
+        refresh = issue_refresh_token(dummy_user, owner["client_id"])
+
+        r = test_client.post("/oauth/token", data={
+            "grant_type": "refresh_token", "refresh_token": refresh,
+            "client_id": self.CIMD_ID,
+        })
+
+        assert r.status_code == 400
+        assert r.json()["error"] == "invalid_grant"
+
+    def test_dcr_clients_still_have_to_present_their_secret(self, test_client, tmp_db, dummy_user):
+        # guard against the exemption widening to every client: an opaque DCR
+        # id is not a CIMD id, so the secret check still runs for it
+        oauth._ensure_tokens_table()
+        client = create_oauth_client("app", ["http://localhost/cb"])
+        refresh = issue_refresh_token(dummy_user, client["client_id"])
+
+        r = test_client.post("/oauth/token", data={
+            "grant_type": "refresh_token", "refresh_token": refresh,
+            "client_id": client["client_id"],
+        })
+
+        assert r.status_code == 401
+        assert r.json()["error"] == "invalid_client"
+
+    def test_missing_client_id_is_still_rejected(self, test_client, tmp_db, dummy_user):
+        # "" is not a CIMD id either - an omitted client_id must not slip
+        # through the exemption
+        oauth._ensure_tokens_table()
+        refresh = issue_refresh_token(dummy_user, self.CIMD_ID)
+
+        r = test_client.post("/oauth/token", data={
+            "grant_type": "refresh_token", "refresh_token": refresh,
+        })
+
+        assert r.status_code == 401
+        assert r.json()["error"] == "invalid_client"
+
+    def test_refreshed_access_token_passes_verify_token(self, test_client, tmp_db, dummy_user):
+        from auth import verify_token as _verify
+
+        oauth._ensure_tokens_table()
+        refresh = issue_refresh_token(dummy_user, self.CIMD_ID)
+        r = test_client.post("/oauth/token", data={
+            "grant_type": "refresh_token", "refresh_token": refresh,
+            "client_id": self.CIMD_ID,
+        })
+
+        import asyncio
+        assert asyncio.run(_verify(r.json()["access_token"]))["username"] == dummy_user
